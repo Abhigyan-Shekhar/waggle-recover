@@ -58,7 +58,9 @@ def outcome_content(outcome_data: dict[str, Any]) -> str:
         f"action={action}, outcome={outcome}, "
         f"recovered=₹{recovered:.2f}. "
         f"Customer: {outcome_data.get('customer_id', '?')}, "
-        f"merchant: {outcome_data.get('merchant_id', '?')}."
+        f"merchant: {outcome_data.get('merchant_id', '?')}, "
+        f"instrument: {outcome_data.get('instrument_id', '?')}, "
+        f"failure_code: {outcome_data.get('failure_code', '?')}."
     )
 
 
@@ -145,6 +147,10 @@ def outcome_tags(outcome_data: dict[str, Any]) -> list[str]:
     ]
     if outcome_data.get("recommended_method"):
         tags.append(f"method:{outcome_data['recommended_method']}")
+    if outcome_data.get("instrument_id"):
+        tags.append(f"instrument:{outcome_data['instrument_id']}")
+    if outcome_data.get("failure_code"):
+        tags.append(f"failure_reason:{outcome_data['failure_code']}")
     return tags
 
 
@@ -208,6 +214,9 @@ def outcome_metadata(outcome_data: dict[str, Any]) -> dict[str, Any]:
         "merchant_id": outcome_data.get("merchant_id", ""),
         "recommended_method": outcome_data.get("recommended_method"),
         "retry_after_seconds": outcome_data.get("retry_after_seconds"),
+        "method": outcome_data.get("method", ""),
+        "instrument_id": outcome_data.get("instrument_id", ""),
+        "failure_code": outcome_data.get("failure_code", ""),
     }
 
 

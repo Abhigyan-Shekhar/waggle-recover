@@ -191,6 +191,10 @@ class RecoveryAttempt(BaseModel):
     outcome: OutcomeStatus = OutcomeStatus.PENDING
     recovered_amount: int = 0
     failure_reason_if_any: str = ""
+    # Provenance copied from the originating failure; required for stale-memory validation.
+    method: str = ""
+    instrument_id: str = ""
+    failure_code: str = ""
 
     # Waggle node id for outcome
     waggle_outcome_node_id: str | None = None

@@ -50,6 +50,13 @@ def _make_event(**kwargs) -> NormalizedPaymentEvent:
 
 
 class TestOrchestratorBasic:
+    def test_real_execution_is_pending_until_capture(self, tmp_setup):
+        orchestrator, _, db = tmp_setup
+        event = _make_event(payment_id="pay_external_pending")
+        result = orchestrator.process_event(event=event, simulate=False)
+        assert result["outcome"]["outcome"] == "PENDING"
+        assert result["outcome"]["recovered_amount"] == 0
+
     def test_processes_failed_event(self, tmp_setup):
         orchestrator, _, _ = tmp_setup
         event = _make_event()
@@ -214,8 +221,11 @@ class TestStaleTrapScenario:
             executed_at=datetime.now(UTC),
             outcome=OutcomeStatus.SUCCESS,
             recovered_amount=100000,
+            method="card",
+            instrument_id="card_stale_old",
+            failure_code="issuer_unavailable",
         )
-        adapter.store_recovery_outcome(old_attempt, failure_node_id=old_failure_node)
+        old_outcome_node = adapter.store_recovery_outcome(old_attempt, failure_node_id=old_failure_node)
 
         # 3. card_new supersedes card_old
         orchestrator.register_instrument(
@@ -250,6 +260,14 @@ class TestStaleTrapScenario:
         assert "metrics" in result
         # The explanation should be populated
         assert result["decision"]["explanation"]
+        # Stale successful timing must not be accepted when it is presented to
+        # the validator (the invariant behind retrieval and the decision layer).
+        from app.domain.models import EvidenceReference
+        validation = orchestrator.retriever.validator.validate_evidence_bundle(
+            [EvidenceReference(waggle_node_id=old_outcome_node, label="old success", memory_type="recovery_outcome")],
+            current_instrument_alias="card_stale_new",
+        )
+        assert old_outcome_node in {r.waggle_node_id for r in validation.rejected}
 
     def test_stale_evidence_appears_in_discarded(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup
@@ -263,6 +281,6 @@ class TestStaleTrapScenario:
             ),
             simulate=True,
         )
-        # Just verify the pipeline doesn't crash with no history
+        # No current-event self-memory should be reported.
         assert result["status"] == "processed"
-        assert result["metrics"]["evidence_discarded"] >= 0
+        assert result["metrics"]["memory_contribution"] == "NONE"

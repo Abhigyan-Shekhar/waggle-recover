@@ -176,6 +176,16 @@ class WaggleRecoveryMemoryAdapter:
                 )
             except Exception as e:
                 LOGGER.debug("Could not link outcome to decision: %s", e)
+        if failure_node_id:
+            try:
+                self.graph.add_edge(
+                    source_id=node_id,
+                    target_id=failure_node_id,
+                    relationship=RelationType.DERIVED_FROM,
+                    metadata={"relation": "outcome_of_failure"},
+                )
+            except Exception as e:
+                LOGGER.debug("Could not link outcome to failure: %s", e)
 
         LOGGER.debug("Stored outcome %s as Waggle node %s", attempt.id, node_id)
         return node_id

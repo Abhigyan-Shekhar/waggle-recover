@@ -134,6 +134,16 @@ class SupersessionValidator:
             )
 
         # Check if the evidence's instrument has been superseded by traversing updates chain
+        # First use the explicit provenance recorded on the current instrument;
+        # this remains reliable even when semantic retrieval merges similar nodes.
+        if self._instrument_declares_supersedes(current_instrument_alias, evidence_instrument):
+            return SupersessionResult(
+                evidence=ref,
+                temporal_status=TemporalStatus.SUPERSEDED,
+                update_chain=[evidence_instrument, current_instrument_alias],
+                superseded_by=current_instrument_alias,
+                reason=f"Evidence tied to {evidence_instrument}, explicitly superseded by {current_instrument_alias}.",
+            )
         superseded_by, chain = self._find_superseding_instrument(
             evidence_instrument_alias=evidence_instrument,
             current_instrument_alias=current_instrument_alias,
@@ -151,15 +161,31 @@ class SupersessionValidator:
                 ),
             )
 
-        # Instrument is different but not in a supersession chain — STALE by recency
+        # A different active instrument is a valid alternative-method signal,
+        # not stale evidence. Only an explicit invalidation/update chain rejects.
         return SupersessionResult(
             evidence=ref,
-            temporal_status=TemporalStatus.STALE,
+            temporal_status=TemporalStatus.CURRENT,
             reason=(
-                f"Evidence tied to {evidence_instrument}, current instrument is {current_instrument_alias}. "
-                "No direct supersession chain found."
+                f"Evidence tied to active alternative instrument {evidence_instrument}; "
+                "no direct supersession chain found."
             ),
         )
+
+    def _instrument_declares_supersedes(self, current_alias: str, old_alias: str) -> bool:
+        try:
+            result = self.graph.query(query=f"payment instrument {current_alias}", max_nodes=10, max_depth=0)
+            for node in result.nodes:
+                if f"instrument:{current_alias}" not in (node.tags or []):
+                    continue
+                metadata = node.metadata or {}
+                if str(metadata.get("supersedes") or "") == old_alias:
+                    return True
+                if f"Supersedes instrument {old_alias}" in node.content:
+                    return True
+        except Exception:
+            return False
+        return False
 
     def _extract_instrument_from_node(self, node: Node) -> str | None:
         """Extract instrument alias from node tags or metadata."""
@@ -177,11 +203,23 @@ class SupersessionValidator:
         if "recommended_method" in metadata and metadata["recommended_method"]:
             return None  # This is a method name, not an instrument
 
+        # Recovery outcomes may be linked to their originating failure. Follow
+        # that provenance edge when older records lack copied instrument tags.
+        try:
+            related = self.graph.get_related(node_id=node.id, max_depth=1)
+            for related_node in related.nodes:
+                if "payment_failure" in (related_node.tags or []):
+                    for tag in related_node.tags:
+                        if tag.startswith("instrument:"):
+                            return tag.split(":", 1)[1]
+        except Exception:
+            pass
+
         # Check content for common patterns
         content = node.content.lower()
         # Look for "using card_XXXX" pattern
         import re
-        match = re.search(r"using\s+(card_\w+|upi_\w+|wallet_\w+)", content)
+        match = re.search(r"(?:using|instrument:)\s*(card_\w+|upi_\w+|wallet_\w+|nb_\w+)", content)
         if match:
             return match.group(1)
 

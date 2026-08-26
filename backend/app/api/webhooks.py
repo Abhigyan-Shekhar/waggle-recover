@@ -29,18 +29,21 @@ async def razorpay_webhook(
     body = await request.body()
     payload = json.loads(body)
 
-    # 1. Signature verification (if configured)
+    # 1. Signature verification: local demo mode may be unsigned, enabled
+    # Razorpay mode fails closed on missing credentials or signature.
     signature_valid = False
-    if settings.razorpay_webhook_secret and x_razorpay_signature:
+    if not settings.razorpay_enabled:
+        signature_valid = True
+    elif settings.razorpay_webhook_secret and x_razorpay_signature:
         signature_valid = verify_webhook_signature(
             body=body,
             signature=x_razorpay_signature,
             webhook_secret=settings.razorpay_webhook_secret,
         )
-        if not signature_valid and settings.razorpay_enabled:
+        if not signature_valid:
             raise HTTPException(status_code=400, detail="Invalid webhook signature")
     else:
-        signature_valid = True  # Demo mode — skip signature validation
+        raise HTTPException(status_code=503, detail="Razorpay webhook verification is not configured")
 
     # 2. Idempotency — deduplicate by event + payment_id
     event_type = payload.get("event", "")
@@ -69,4 +72,5 @@ async def razorpay_webhook(
         return {"status": "skipped", "reason": f"Unsupported event: {event_type}"}
 
     result = orchestrator.process_event(event=event, simulate=False)
+    db.mark_webhook_processed(event_hash)
     return {**result, "webhook_id": event_hash}

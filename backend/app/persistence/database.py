@@ -313,6 +313,18 @@ class Database:
     def upsert_webhook_event(self, event: dict[str, Any]) -> bool:
         """Returns True if event is new (not duplicate)."""
         with self._connect() as conn:
+            existing = conn.execute("SELECT processed FROM webhook_events WHERE id = ?", (event["id"],)).fetchone()
+            if existing is not None:
+                # A received-but-failed event is safely retryable; a processed
+                # event is a true idempotency duplicate.
+                if existing["processed"] == 0:
+                    conn.execute(
+                        "UPDATE webhook_events SET raw_payload=?, signature_valid=? WHERE id=?",
+                        (event["raw_payload"], event["signature_valid"], event["id"]),
+                    )
+                    conn.commit()
+                    return True
+                return False
             try:
                 conn.execute(
                     """
@@ -325,6 +337,23 @@ class Database:
                 return True
             except sqlite3.IntegrityError:
                 return False  # Duplicate
+
+    def mark_payment_captured(self, payment_id: str, amount: int) -> int:
+        """Close pending attempts correlated through the failed payment ID."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE recovery_attempts SET outcome='SUCCESS', recovered_amount=?
+                   WHERE failure_id IN (SELECT id FROM payment_failures WHERE external_payment_id=?)
+                   AND outcome IN ('PENDING', 'FAILURE')""",
+                (amount, payment_id),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def mark_webhook_processed(self, event_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE webhook_events SET processed=1 WHERE id=?", (event_id,))
+            conn.commit()
 
     def upsert_evaluation_run(self, run: dict[str, Any]) -> None:
         with self._connect() as conn:

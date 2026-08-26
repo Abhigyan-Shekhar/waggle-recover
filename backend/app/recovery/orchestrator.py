@@ -119,20 +119,22 @@ class RecoveryOrchestrator:
         # 4. Get current instruments for this customer
         instruments = self._load_instruments(failure.customer_id)
 
-        # 5. Store failure in Waggle + app DB
-        waggle_node_id = self.adapter.store_payment_failure(failure)
-        failure_dict = failure.model_dump(mode="json")
-        failure_dict["waggle_node_id"] = waggle_node_id
-        failure_dict["created_at"] = datetime.now(UTC).isoformat()
-        self.db.upsert_failure(failure_dict)
-
-        # 6. Retrieve evidence from Waggle
+        # 5. Retrieve historical evidence before writing this current event;
+        # otherwise a brand-new failure can falsely count as its own memory.
         bundle = self.retriever.retrieve(
             failure=failure,
             merchant_policy=policy,
             current_instruments=instruments,
             retry_count=retry_count,
         )
+
+        # 6. Store current failure after retrieval so it can still anchor the
+        # decision/outcome graph without contaminating historical evidence.
+        waggle_node_id = self.adapter.store_payment_failure(failure)
+        failure_dict = failure.model_dump(mode="json")
+        failure_dict["waggle_node_id"] = waggle_node_id
+        failure_dict["created_at"] = datetime.now(UTC).isoformat()
+        self.db.upsert_failure(failure_dict)
 
         # 7. Stage 1: Candidate decision
         decision_start = time.time()
@@ -180,6 +182,9 @@ class RecoveryOrchestrator:
             merchant_id=failure.merchant_id,
             failure_id=failure.id,
             original_amount=failure.amount,
+            method=failure.method,
+            instrument_id=failure.instrument_id,
+            failure_code=failure.failure_code,
             simulate=simulate,
             simulation_outcomes=simulation_outcomes,
         )
@@ -228,10 +233,14 @@ class RecoveryOrchestrator:
     def _handle_captured(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
         """Handle payment.captured — close any open recovery attempts."""
         LOGGER.info("Payment captured: %s", event.payment_id)
-        # Mark any pending attempts for this payment as captured/succeeded
+        # Correlate the gateway capture to the original failure. This is the
+        # only path that turns an external recommendation into recovered GMV.
+        updated = self.db.mark_payment_captured(event.payment_id, event.amount)
         return {
             "status": "captured",
             "payment_id": event.payment_id,
+            "updated_attempts": updated,
+            "recovered_amount": event.amount,
         }
 
     def _build_failure(self, event: NormalizedPaymentEvent) -> PaymentFailure:

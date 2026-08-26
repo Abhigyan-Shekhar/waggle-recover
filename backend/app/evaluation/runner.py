@@ -82,6 +82,13 @@ def run_evaluation(
     for i, scenario in enumerate(scenarios):
         LOGGER.info("[%d/%d] Running scenario: %s", i + 1, len(scenarios), scenario.name)
 
+        # Each benchmark case is an independent world. Reusing the same
+        # customer/instrument pools across cases must never leak memory or
+        # retry counts from an earlier case into System C.
+        if i:
+            db.clear_recovery_data()
+            adapter.graph.clear_all()
+
         # Step 1: Populate Waggle memory with scenario history
         _populate_memory(adapter, db, orchestrator, scenario)
 

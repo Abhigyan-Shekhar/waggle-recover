@@ -26,6 +26,9 @@ class RecoveryExecutor:
         merchant_id: str,
         failure_id: str,
         original_amount: int,
+        method: str = "",
+        instrument_id: str = "",
+        failure_code: str = "",
         simulate: bool = True,
         simulation_outcomes: dict[str, Any] | None = None,
     ) -> RecoveryAttempt:
@@ -47,6 +50,9 @@ class RecoveryExecutor:
             recommended_method=decision.recommended_method,
             retry_after_seconds=decision.retry_after_seconds,
             decision_id=decision.id,
+            method=method,
+            instrument_id=instrument_id,
+            failure_code=failure_code,
         )
 
         if simulate:
@@ -61,12 +67,9 @@ class RecoveryExecutor:
                 outcome = OutcomeStatus.SKIPPED
                 recovered_amount = 0
             else:
-                LOGGER.warning("Real execution not implemented; using simulation")
-                outcome, recovered_amount = self._simulate_outcome(
-                    decision=decision,
-                    original_amount=original_amount,
-                    simulation_outcomes=simulation_outcomes,
-                )
+                # A real webhook only creates a recommendation. Recovery is
+                # confirmed by a later payment.captured event, never guessed.
+                outcome, recovered_amount = OutcomeStatus.PENDING, 0
 
         attempt.outcome = outcome
         attempt.recovered_amount = recovered_amount if outcome == OutcomeStatus.SUCCESS else 0
@@ -87,10 +90,18 @@ class RecoveryExecutor:
     ) -> tuple[OutcomeStatus, int]:
         """Deterministic outcome simulation."""
         if simulation_outcomes:
-            # Use provided ground-truth outcomes
+            # Prefer parameter-specific ground truth (e.g. RETRY_AFTER:480 or
+            # SUGGEST_METHOD:upi), then fall back to action-level fixtures.
             action_key = decision.action.value
-            if action_key in simulation_outcomes:
-                result = simulation_outcomes[action_key]
+            parameter_key = action_key
+            if decision.action == RecoveryAction.RETRY_AFTER and decision.retry_after_seconds is not None:
+                parameter_key = f"{action_key}:{decision.retry_after_seconds}"
+            elif decision.action == RecoveryAction.SUGGEST_METHOD and decision.recommended_method:
+                parameter_key = f"{action_key}:{decision.recommended_method}"
+            result = simulation_outcomes.get(parameter_key, simulation_outcomes.get(action_key))
+            if isinstance(result, dict):
+                result = result.get("outcome", result.get("status"))
+            if result is not None:
                 if result in ("SUCCESS", OutcomeStatus.SUCCESS, True):
                     return OutcomeStatus.SUCCESS, original_amount
                 elif result in ("FAILURE", OutcomeStatus.FAILURE, False):

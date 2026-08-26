@@ -29,9 +29,9 @@ function App() {
   };
   const runEvaluation = async () => {
     setMessage("Evaluating 200 seeded synthetic histories…");
-    const res = await fetch(`${API}/api/evaluation/run-sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seed: 42, count: 50 }) });
+    const res = await fetch(`${API}/api/evaluation/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seed: 42, count: 200 }) });
     const body = await res.json();
-    setMessage(res.ok ? `Evaluation complete — ${body.scenario_count} scenarios, ${body.improvements?.c_vs_b_recovered_gmv ?? 0} paise incremental GMV vs contextual.` : "Evaluation failed");
+    setMessage(res.ok ? `Evaluation started — run ${body.run_id}. Metrics will be available when processing completes.` : "Evaluation failed");
   };
   const cards = [
     ["GMV at risk", money(metrics?.gmv_at_risk)], ["Recovered GMV", money(metrics?.recovered_gmv)], ["Recovery rate", `${metrics?.recovery_rate_pct ?? 0}%`], ["Stale evidence prevented", metrics?.stale_evidence_prevented ?? 0], ["Policy violations", metrics?.policy_violations ?? 0],
