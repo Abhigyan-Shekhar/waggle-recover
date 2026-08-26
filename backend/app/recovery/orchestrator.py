@@ -1,0 +1,370 @@
+"""Main recovery orchestrator — ties the entire pipeline together.
+
+Flow:
+  NormalizedPaymentEvent
+    → store failure in Waggle + app DB
+    → retrieve evidence (lookup-first or full contextual)
+    → supersession validation
+    → candidate decision (deterministic or LLM)
+    → policy engine validation
+    → execute/simulate
+    → store outcome back in Waggle
+    → return audit trail
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import UTC, datetime
+from typing import Any
+
+from app.config import Settings, get_settings
+from app.domain.enums import MemoryContribution, OutcomeStatus, PolicyResult, RecoveryAction
+from app.domain.models import (
+    EvidenceBundle,
+    MerchantPolicy,
+    NormalizedPaymentEvent,
+    PaymentFailure,
+    PaymentInstrument,
+    RecoveryAttempt,
+    RecoveryDecision,
+)
+from app.memory.retrieval import EvidenceRetriever
+from app.memory.supersession import SupersessionValidator
+from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
+from app.persistence.database import Database
+from app.recovery.decision_engine import DecisionProvider, DeterministicDecisionProvider, create_decision_provider
+from app.recovery.executor import RecoveryExecutor
+from app.recovery.explanation import build_explanation, build_structured_audit
+from app.recovery.policy import PolicyEngine
+
+LOGGER = logging.getLogger(__name__)
+
+# Default merchant policy applied when no specific policy is found
+DEFAULT_MERCHANT_POLICY = MerchantPolicy(
+    merchant_id="default",
+    max_recovery_attempts=3,
+    min_retry_interval_seconds=300,
+    max_retry_interval_seconds=3600,
+    allowed_actions=[
+        RecoveryAction.RETRY_NOW,
+        RecoveryAction.RETRY_AFTER,
+        RecoveryAction.SUGGEST_METHOD,
+        RecoveryAction.CUSTOMER_NUDGE,
+        RecoveryAction.STOP,
+    ],
+)
+
+
+class RecoveryOrchestrator:
+    """
+    End-to-end recovery orchestrator.
+
+    Used by both the Razorpay webhook handler and the simulator.
+    Both paths produce identical NormalizedPaymentEvent → same pipeline.
+    """
+
+    def __init__(
+        self,
+        adapter: WaggleRecoveryMemoryAdapter,
+        db: Database,
+        decision_provider: DecisionProvider | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        self.adapter = adapter
+        self.db = db
+        self.settings = settings or get_settings()
+
+        validator = SupersessionValidator(adapter.graph)
+        self.retriever = EvidenceRetriever(
+            adapter=adapter,
+            supersession_validator=validator,
+            lookup_confidence_threshold=self.settings.lookup_first_confidence_threshold,
+            max_evidence_nodes=self.settings.max_evidence_nodes,
+        )
+        self.policy_engine = PolicyEngine()
+        self.executor = RecoveryExecutor()
+        self.decision_provider = decision_provider or DeterministicDecisionProvider()
+
+    def process_event(
+        self,
+        event: NormalizedPaymentEvent,
+        merchant_policy: MerchantPolicy | None = None,
+        simulation_outcomes: dict[str, Any] | None = None,
+        simulate: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Main entry point. Processes a normalized payment event through the full pipeline.
+
+        Returns a structured result dict with decision, outcome, and audit trail.
+        """
+        start_total = time.time()
+
+        if event.event_type == "payment.captured":
+            return self._handle_captured(event)
+
+        if event.event_type != "payment.failed":
+            return {"status": "skipped", "reason": f"Unsupported event type: {event.event_type}"}
+
+        # 1. Build failure domain model
+        failure = self._build_failure(event)
+
+        # 2. Get retry count for this customer+merchant
+        retry_count = self.db.get_recovery_count(failure.customer_id, failure.merchant_id)
+
+        # 3. Get merchant policy
+        policy = merchant_policy or self._load_merchant_policy(failure.merchant_id)
+
+        # 4. Get current instruments for this customer
+        instruments = self._load_instruments(failure.customer_id)
+
+        # 5. Store failure in Waggle + app DB
+        waggle_node_id = self.adapter.store_payment_failure(failure)
+        failure_dict = failure.model_dump(mode="json")
+        failure_dict["waggle_node_id"] = waggle_node_id
+        failure_dict["created_at"] = datetime.now(UTC).isoformat()
+        self.db.upsert_failure(failure_dict)
+
+        # 6. Retrieve evidence from Waggle
+        bundle = self.retriever.retrieve(
+            failure=failure,
+            merchant_policy=policy,
+            current_instruments=instruments,
+            retry_count=retry_count,
+        )
+
+        # 7. Stage 1: Candidate decision
+        decision_start = time.time()
+        candidate = self.decision_provider.decide(bundle)
+        decision_latency_ms = (time.time() - decision_start) * 1000
+
+        # 8. Stage 2: Policy validation
+        policy_result = self.policy_engine.validate(
+            decision=candidate,
+            bundle=bundle,
+            retry_count=retry_count,
+            merchant_policy=policy,
+        )
+
+        # Apply policy modifications
+        final_decision = self._apply_policy(candidate, policy_result)
+        final_decision.policy_result = policy_result.result
+        final_decision.policy_note = policy_result.formatted()
+
+        # 9. Build explanation
+        explanation = build_explanation(bundle, final_decision, policy_result)
+        final_decision.explanation = explanation
+
+        # 10. Store decision in Waggle + app DB
+        dec_node_id = self.adapter.store_recovery_decision(
+            decision=final_decision,
+            failure_node_id=waggle_node_id,
+            customer_id=failure.customer_id,
+            merchant_id=failure.merchant_id,
+        )
+        final_decision.waggle_node_id = dec_node_id
+
+        dec_dict = final_decision.model_dump(mode="json")
+        dec_dict["evidence_json"] = json.dumps([r.model_dump(mode="json") for r in bundle.accepted_evidence])
+        dec_dict["discarded_json"] = json.dumps([r.model_dump(mode="json") for r in bundle.discarded_evidence])
+        dec_dict["retrieval_mode"] = bundle.retrieval_mode
+        dec_dict["waggle_node_id"] = dec_node_id
+        dec_dict["created_at"] = datetime.now(UTC).isoformat()
+        self.db.upsert_decision(dec_dict)
+
+        # 11. Execute/simulate the action
+        attempt = self.executor.execute(
+            decision=final_decision,
+            customer_id=failure.customer_id,
+            merchant_id=failure.merchant_id,
+            failure_id=failure.id,
+            original_amount=failure.amount,
+            simulate=simulate,
+            simulation_outcomes=simulation_outcomes,
+        )
+
+        # 12. Store outcome in Waggle + app DB
+        outcome_node_id = self.adapter.store_recovery_outcome(
+            attempt=attempt,
+            decision_node_id=dec_node_id,
+            failure_node_id=waggle_node_id,
+        )
+        attempt.waggle_outcome_node_id = outcome_node_id
+
+        attempt_dict = attempt.model_dump(mode="json")
+        attempt_dict["waggle_outcome_node_id"] = outcome_node_id
+        self.db.upsert_attempt(attempt_dict)
+
+        # 13. Update instrument success timestamp if recovery succeeded
+        if attempt.outcome == OutcomeStatus.SUCCESS and failure.instrument_id:
+            self._update_instrument_success(failure.customer_id, failure.instrument_id)
+
+        total_latency_ms = (time.time() - start_total) * 1000
+
+        # 14. Build audit record
+        audit = build_structured_audit(bundle, final_decision, policy_result)
+
+        return {
+            "status": "processed",
+            "failure_id": failure.id,
+            "failure_waggle_node": waggle_node_id,
+            "decision": final_decision.model_dump(mode="json"),
+            "decision_waggle_node": dec_node_id,
+            "outcome": attempt.model_dump(mode="json"),
+            "outcome_waggle_node": outcome_node_id,
+            "audit": audit,
+            "metrics": {
+                "total_latency_ms": round(total_latency_ms, 2),
+                "decision_latency_ms": round(decision_latency_ms, 2),
+                "retrieval_latency_ms": round(bundle.retrieval_latency_ms, 2),
+                "evidence_accepted": len(bundle.accepted_evidence),
+                "evidence_discarded": len(bundle.discarded_evidence),
+                "retrieval_mode": bundle.retrieval_mode,
+                "memory_contribution": bundle.memory_contribution,
+            },
+        }
+
+    def _handle_captured(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
+        """Handle payment.captured — close any open recovery attempts."""
+        LOGGER.info("Payment captured: %s", event.payment_id)
+        # Mark any pending attempts for this payment as captured/succeeded
+        return {
+            "status": "captured",
+            "payment_id": event.payment_id,
+        }
+
+    def _build_failure(self, event: NormalizedPaymentEvent) -> PaymentFailure:
+        return PaymentFailure(
+            external_payment_id=event.payment_id,
+            order_id=event.order_id,
+            customer_id=event.customer_id,
+            merchant_id=event.merchant_id,
+            amount=event.amount,
+            currency=event.currency,
+            method=event.method,
+            instrument_id=event.instrument_id,
+            route=event.route,
+            failure_code=event.error_code,
+            failure_reason=event.error_description,
+            failure_source=event.error_source,
+            failure_step=event.error_step,
+            occurred_at=event.created_at,
+            raw_event_id=event.payment_id,
+        )
+
+    def _load_merchant_policy(self, merchant_id: str) -> MerchantPolicy:
+        """Load merchant policy from Waggle or return default."""
+        node = self.adapter.get_merchant_policy_node(merchant_id)
+        if node:
+            meta = node.get("metadata", {})
+            try:
+                return MerchantPolicy(
+                    merchant_id=merchant_id,
+                    max_recovery_attempts=meta.get("max_recovery_attempts", 3),
+                    min_retry_interval_seconds=meta.get("min_retry_interval_seconds", 300),
+                    max_retry_interval_seconds=meta.get("max_retry_interval_seconds", 3600),
+                    allowed_actions=meta.get("allowed_actions", DEFAULT_MERCHANT_POLICY.allowed_actions),
+                    blocked_methods=meta.get("blocked_methods", []),
+                    cooldown_seconds=meta.get("cooldown_seconds", 600),
+                )
+            except Exception:
+                pass
+        return DEFAULT_MERCHANT_POLICY.model_copy(update={"merchant_id": merchant_id})
+
+    def _load_instruments(self, customer_id: str) -> list[PaymentInstrument]:
+        """Load current instruments for a customer from app DB."""
+        rows = self.db.get_instruments_for_customer(customer_id)
+        instruments = []
+        for row in rows:
+            try:
+                instruments.append(PaymentInstrument(
+                    id=row["id"],
+                    customer_id=row["customer_id"],
+                    instrument_type=row["instrument_type"],
+                    fingerprint_or_safe_alias=row["fingerprint_or_safe_alias"],
+                    status=row["status"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    supersedes_instrument_id=row.get("supersedes_instrument_id"),
+                    waggle_node_id=row.get("waggle_node_id"),
+                ))
+            except Exception as e:
+                LOGGER.debug("Could not parse instrument row: %s", e)
+        return instruments
+
+    def _apply_policy(
+        self, candidate: RecoveryDecision, policy_result
+    ) -> RecoveryDecision:
+        """Apply policy ALLOW/MODIFY/BLOCK to the candidate decision."""
+        if policy_result.result == PolicyResult.ALLOW:
+            return candidate
+
+        if policy_result.result == PolicyResult.MODIFY:
+            if policy_result.modified_action:
+                candidate.action = policy_result.modified_action
+            if policy_result.modified_retry_seconds is not None:
+                candidate.retry_after_seconds = policy_result.modified_retry_seconds
+            candidate.reason += f" [Policy modified: {policy_result.result}]"
+            return candidate
+
+        if policy_result.result == PolicyResult.BLOCK:
+            candidate.action = policy_result.modified_action or RecoveryAction.STOP
+            candidate.reason = f"Policy BLOCKED: {policy_result.block_reason}"
+            candidate.confidence = 1.0  # Certain about STOP
+            return candidate
+
+        return candidate
+
+    def _update_instrument_success(self, customer_id: str, instrument_id: str) -> None:
+        """Update last_success_at for an instrument after successful recovery."""
+        now = datetime.now(UTC).isoformat()
+        self.db.execute_write(
+            """
+            UPDATE payment_instruments
+            SET last_success_at = ?
+            WHERE customer_id = ? AND fingerprint_or_safe_alias = ?
+            """,
+            (now, customer_id, instrument_id),
+        )
+
+    def register_instrument(
+        self,
+        customer_id: str,
+        instrument_type: str,
+        alias: str,
+        supersedes_alias: str | None = None,
+    ) -> PaymentInstrument:
+        """Register a new payment instrument, creating supersession chain if needed."""
+        old_instrument_node_id = None
+        if supersedes_alias:
+            old_node = self.adapter.get_instrument_node(supersedes_alias, customer_id)
+            if old_node:
+                old_instrument_node_id = old_node["id"]
+
+        instrument = PaymentInstrument(
+            customer_id=customer_id,
+            instrument_type=instrument_type,
+            fingerprint_or_safe_alias=alias,
+            status="active",
+            supersedes_instrument_id=supersedes_alias,
+        )
+
+        waggle_node_id = self.adapter.store_payment_instrument(
+            instrument=instrument,
+            old_instrument_node_id=old_instrument_node_id,
+        )
+        instrument.waggle_node_id = waggle_node_id
+
+        # Persist in app DB
+        instr_dict = instrument.model_dump(mode="json")
+        instr_dict["waggle_node_id"] = waggle_node_id
+        self.db.upsert_instrument(instr_dict)
+
+        # Mark old instrument as superseded in DB
+        if supersedes_alias:
+            self.db.execute_write(
+                "UPDATE payment_instruments SET status = 'superseded' WHERE customer_id = ? AND fingerprint_or_safe_alias = ?",
+                (customer_id, supersedes_alias),
+            )
+
+        return instrument
