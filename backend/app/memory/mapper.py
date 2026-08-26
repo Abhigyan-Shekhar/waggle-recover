@@ -217,6 +217,7 @@ def outcome_metadata(outcome_data: dict[str, Any]) -> dict[str, Any]:
         "method": outcome_data.get("method", ""),
         "instrument_id": outcome_data.get("instrument_id", ""),
         "failure_code": outcome_data.get("failure_code", ""),
+        "executed_at": outcome_data.get("executed_at", ""),
     }
 
 

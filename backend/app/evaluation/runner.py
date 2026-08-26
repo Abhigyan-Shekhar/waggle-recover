@@ -322,7 +322,7 @@ def _update_metrics(
         metrics.correct_action_count += 1
 
     # Simulate outcome
-    outcome_str = scenario.action_outcomes.get(action, "FAILURE")
+    outcome_str = _outcome_for_decision(scenario, action, decision)
     if outcome_str == "SUCCESS":
         metrics.success_count += 1
         metrics.total_recovered_amount += scenario.amount
@@ -383,3 +383,21 @@ def _update_metrics_dict(
         metrics.category_results[cat]["correct"] += 1
     if outcome_status == "SUCCESS":
         metrics.category_results[cat]["success"] += 1
+
+
+def _outcome_for_decision(scenario: EvalScenario, action: str, decision: Any) -> str:
+    """Resolve parameter-sensitive synthetic ground truth consistently for all systems."""
+    parameter_key = action
+    retry_after = getattr(decision, "retry_after_seconds", None)
+    method = getattr(decision, "recommended_method", None)
+    if isinstance(decision, dict):
+        retry_after = decision.get("retry_after_seconds")
+        method = decision.get("recommended_method")
+    if action == "RETRY_AFTER" and retry_after is not None:
+        parameter_key = f"{action}:{retry_after}"
+    elif action == "SUGGEST_METHOD" and method:
+        parameter_key = f"{action}:{method}"
+    value = scenario.action_outcomes.get(parameter_key, scenario.action_outcomes.get(action, "FAILURE"))
+    if isinstance(value, dict):
+        value = value.get("outcome", value.get("status", "FAILURE"))
+    return str(value)

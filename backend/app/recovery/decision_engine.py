@@ -209,7 +209,7 @@ class DeterministicDecisionProvider(DecisionProvider):
         failure = bundle.current_failure
         # Check current instruments for alternatives
         for inst in bundle.current_instruments:
-            if inst.fingerprint_or_safe_alias != failure.instrument_id:
+            if inst.status == "active" and inst.fingerprint_or_safe_alias != failure.instrument_id:
                 return inst.instrument_type
         # Common fallback alternatives
         alt_map = {"card": "upi", "upi": "netbanking", "netbanking": "wallet", "wallet": "card"}

@@ -113,8 +113,25 @@ class PolicyEngine:
                     block_reason=block_reason,
                 )
 
+        # 3b. Routes are a separate merchant constraint.
+        if decision.recommended_route:
+            route_check = PolicyCheck(
+                "route_allowed",
+                decision.recommended_route not in policy.blocked_routes,
+                f"{decision.recommended_route} {'not blocked' if decision.recommended_route not in policy.blocked_routes else 'is blocked'}",
+            )
+            checks.append(route_check)
+            if not route_check.passed:
+                return PolicyValidationResult(result=PolicyResult.BLOCK, checks=checks,
+                                              block_reason=f"Recommended route {decision.recommended_route} is blocked")
+
         # 4. Check retry interval bounds
         if decision.action in (RecoveryAction.RETRY_AFTER, RecoveryAction.RETRY_NOW):
+            if decision.action == RecoveryAction.RETRY_NOW:
+                modifications["action"] = RecoveryAction.RETRY_AFTER
+                modifications["retry_after_seconds"] = policy.min_retry_interval_seconds
+                checks.append(PolicyCheck("retry_now_interval", False,
+                    f"RETRY_NOW converted to RETRY_AFTER({policy.min_retry_interval_seconds}s)"))
             interval_result, modified_seconds = self._check_retry_interval(decision.retry_after_seconds, policy)
             checks.append(interval_result)
             if not interval_result.passed and modified_seconds is not None:
@@ -184,7 +201,7 @@ class PolicyEngine:
         self, retry_seconds: int | None, policy: MerchantPolicy
     ) -> tuple[PolicyCheck, int | None]:
         if retry_seconds is None:
-            return PolicyCheck("retry_interval", True, "no interval specified"), None
+            return PolicyCheck("retry_interval", False, f"missing interval → adjusted to {policy.min_retry_interval_seconds}s"), policy.min_retry_interval_seconds
 
         if retry_seconds < policy.min_retry_interval_seconds:
             adj = policy.min_retry_interval_seconds

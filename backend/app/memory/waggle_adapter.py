@@ -235,8 +235,10 @@ class WaggleRecoveryMemoryAdapter:
                     t in tags
                     for t in ["payment_failure", "recovery_decision", "recovery_outcome", "payment_instrument"]
                 ):
-                    # Check customer matches
-                    if any(t == f"customer:{customer_id}" for t in tags):
+                    # Customer history is deliberately merchant-scoped. A
+                    # separate merchant-pattern query handles cross-customer learning.
+                    if (any(t == f"customer:{customer_id}" for t in tags)
+                            and (not merchant_id or f"merchant:{merchant_id}" in tags)):
                         nodes.append(self._node_to_dict(node))
             return nodes
         except Exception as e:
@@ -294,6 +296,16 @@ class WaggleRecoveryMemoryAdapter:
             return outcomes
         except Exception as e:
             LOGGER.debug("Could not get recovery outcomes: %s", e)
+            return []
+
+    def get_merchant_pattern_history(self, merchant_id: str, max_nodes: int = 10) -> list[dict[str, Any]]:
+        """Retrieve merchant-wide outcome evidence, intentionally across customers."""
+        try:
+            result = self.graph.query(query=f"recovery outcome merchant {merchant_id}", max_nodes=max_nodes, max_depth=1)
+            return [self._node_to_dict(node) for node in result.nodes if "recovery_outcome" in (node.tags or [])
+                    and f"merchant:{merchant_id}" in (node.tags or [])]
+        except Exception as e:
+            LOGGER.debug("Could not get merchant history for %s: %s", merchant_id, e)
             return []
 
     def get_related_nodes(self, node_id: str, max_depth: int = 2) -> list[dict[str, Any]]:
@@ -379,9 +391,10 @@ class WaggleRecoveryMemoryAdapter:
                     "recovery_outcome" in tags
                     and "outcome:success" in tags
                     and f"customer:{customer_id}" in tags
+                    and f"merchant:{merchant_id}" in tags
+                    and f"instrument:{instrument_alias}" in tags
+                    and f"failure_reason:{failure_code}" in tags
                 ):
-                    meta = node.metadata or {}
-                    # Check instrument match in metadata or content
                     node_dict = self._node_to_dict(node)
                     node_dict["_is_direct_match"] = True
                     return node_dict

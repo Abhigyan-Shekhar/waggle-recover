@@ -96,8 +96,10 @@ def score_evidence(
 
 
 def _compute_recency(node: dict[str, Any]) -> float:
-    """Exponential decay recency score based on node creation time."""
-    created_at_str = node.get("created_at")
+    """Exponential decay from event time, never ingestion time when available."""
+    metadata = node.get("metadata", {}) or {}
+    created_at_str = (metadata.get("executed_at") or metadata.get("occurred_at")
+                      or node.get("valid_from") or node.get("created_at"))
     if not created_at_str:
         return 0.5  # Unknown recency — neutral
 

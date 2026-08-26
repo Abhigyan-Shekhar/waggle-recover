@@ -159,6 +159,14 @@ class EvidenceRetriever:
             failure_code=failure.failure_code,
             max_nodes=self.max_evidence_nodes,
         )
+        # Merchant patterns are distinct from customer-specific history and
+        # only supplement it; they are clearly tagged by their own scope.
+        merchant_nodes = self.adapter.get_merchant_pattern_history(
+            merchant_id=failure.merchant_id,
+            max_nodes=max(1, self.max_evidence_nodes // 2),
+        )
+        seen = {node["id"] for node in raw_nodes}
+        raw_nodes.extend(node for node in merchant_nodes if node["id"] not in seen)
 
         if not raw_nodes:
             LOGGER.debug("No Waggle history for customer %s", failure.customer_id)
