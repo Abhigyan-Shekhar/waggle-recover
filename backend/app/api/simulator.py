@@ -199,18 +199,15 @@ async def run_demo_scenario(
 
     # Map scenario_id to curated scenario
     scenario_map = {s.id: s for s in scenarios}
+    named = {s.name.lower().replace(" ", "_"): s for s in scenarios}
 
-    if scenario_id not in scenario_map and scenario_id not in DEMO_SCENARIOS:
-        # Try by name
-        named = {s.name.lower().replace(" ", "_"): s for s in scenarios}
-        if scenario_id.lower() not in named:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not found")
-        scenario = named[scenario_id.lower()]
-    elif scenario_id in scenario_map:
+    if scenario_id in scenario_map:
         scenario = scenario_map[scenario_id]
+    elif scenario_id.lower() in named:
+        scenario = named[scenario_id.lower()]
     else:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not supported via this endpoint")
 
     # Populate memory
