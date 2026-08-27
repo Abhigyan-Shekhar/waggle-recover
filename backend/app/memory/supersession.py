@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 from waggle.graph import MemoryGraph
 from waggle.models import Node, RelationType
@@ -56,6 +55,7 @@ class SupersessionValidator:
         evidence_refs: list[EvidenceReference],
         current_instrument_alias: str,
         current_instrument_node_id: str | None = None,
+        customer_id: str = "",
     ) -> SupersessionSummary:
         """
         Validate all evidence in a bundle against the current instrument state.
@@ -71,7 +71,12 @@ class SupersessionValidator:
         summary = SupersessionSummary()
 
         for ref in evidence_refs:
-            result = self._validate_single(ref, current_instrument_alias, current_instrument_node_id)
+            result = self._validate_single(
+                ref,
+                current_instrument_alias,
+                current_instrument_node_id,
+                customer_id,
+            )
             summary.supersession_results.append(result)
 
             if result.temporal_status in (TemporalStatus.CURRENT, TemporalStatus.UNKNOWN):
@@ -91,6 +96,7 @@ class SupersessionValidator:
         ref: EvidenceReference,
         current_instrument_alias: str,
         current_instrument_node_id: str | None,
+        customer_id: str = "",
     ) -> SupersessionResult:
         """Validate a single evidence reference."""
         try:
@@ -136,7 +142,7 @@ class SupersessionValidator:
         # Check if the evidence's instrument has been superseded by traversing updates chain
         # First use the explicit provenance recorded on the current instrument;
         # this remains reliable even when semantic retrieval merges similar nodes.
-        if self._instrument_declares_supersedes(current_instrument_alias, evidence_instrument):
+        if self._instrument_declares_supersedes(current_instrument_alias, evidence_instrument, customer_id):
             return SupersessionResult(
                 evidence=ref,
                 temporal_status=TemporalStatus.SUPERSEDED,
@@ -147,6 +153,7 @@ class SupersessionValidator:
         superseded_by, chain = self._find_superseding_instrument(
             evidence_instrument_alias=evidence_instrument,
             current_instrument_alias=current_instrument_alias,
+            customer_id=customer_id,
         )
 
         if superseded_by:
@@ -172,11 +179,13 @@ class SupersessionValidator:
             ),
         )
 
-    def _instrument_declares_supersedes(self, current_alias: str, old_alias: str) -> bool:
+    def _instrument_declares_supersedes(self, current_alias: str, old_alias: str, customer_id: str = "") -> bool:
         try:
             result = self.graph.query(query=f"payment instrument {current_alias}", max_nodes=10, max_depth=0)
             for node in result.nodes:
                 if f"instrument:{current_alias}" not in (node.tags or []):
+                    continue
+                if customer_id and f"customer:{customer_id}" not in (node.tags or []):
                     continue
                 metadata = node.metadata or {}
                 if str(metadata.get("supersedes") or "") == old_alias:
@@ -229,6 +238,7 @@ class SupersessionValidator:
         self,
         evidence_instrument_alias: str,
         current_instrument_alias: str,
+        customer_id: str = "",
     ) -> tuple[str | None, list[str]]:
         """
         Traverse the `updates` chain from the evidence instrument upward.
@@ -245,7 +255,7 @@ class SupersessionValidator:
 
         while depth < MAX_CHAIN_DEPTH:
             depth += 1
-            instrument_node_id = self._find_instrument_node_id(current_alias)
+            instrument_node_id = self._find_instrument_node_id(current_alias, customer_id)
 
             if not instrument_node_id:
                 break
@@ -262,6 +272,8 @@ class SupersessionValidator:
                 break
 
             for updating_node in updating_nodes:
+                if customer_id and f"customer:{customer_id}" not in (updating_node.tags or []):
+                    continue
                 updating_alias = self._extract_instrument_from_node(updating_node)
                 if updating_alias:
                     chain.append(updating_alias)
@@ -271,7 +283,7 @@ class SupersessionValidator:
 
         return None, chain
 
-    def _find_instrument_node_id(self, instrument_alias: str) -> str | None:
+    def _find_instrument_node_id(self, instrument_alias: str, customer_id: str = "") -> str | None:
         """Find the Waggle node ID for an instrument alias."""
         try:
             result = self.graph.query(
@@ -280,7 +292,9 @@ class SupersessionValidator:
                 max_depth=0,
             )
             for node in result.nodes:
-                if "payment_instrument" in node.tags:
+                if "payment_instrument" in node.tags and (
+                    not customer_id or f"customer:{customer_id}" in node.tags
+                ):
                     for tag in node.tags:
                         if tag == f"instrument:{instrument_alias}":
                             return node.id
@@ -310,6 +324,7 @@ class SupersessionValidator:
         current_instrument_alias: str,
         label: str = "",
         memory_type: str = "unknown",
+        customer_id: str = "",
     ) -> SupersessionResult:
         """Convenience method to validate a single node."""
         ref = EvidenceReference(
@@ -317,7 +332,7 @@ class SupersessionValidator:
             label=label,
             memory_type=memory_type,
         )
-        return self._validate_single(ref, current_instrument_alias, None)
+        return self._validate_single(ref, current_instrument_alias, None, customer_id)
 
     def is_node_superseded(self, node_id: str) -> bool:
         """Quick check if a node has valid_to set (was superseded by Waggle)."""

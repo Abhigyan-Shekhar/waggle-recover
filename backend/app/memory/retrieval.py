@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from app.domain.enums import MemoryContribution, RetrievalMode, TemporalStatus
 from app.domain.models import (
@@ -110,11 +109,16 @@ class EvidenceRetriever:
             label=candidate["label"],
             memory_type="recovery_outcome",
             relevance_score=0.85,
+            metadata={
+                **candidate.get("metadata", {}),
+                "retry_timing_scope_match": True,
+            },
         )
 
         validation = self.validator.validate_evidence_bundle(
             evidence_refs=[ref],
             current_instrument_alias=current_instrument_alias,
+            customer_id=failure.customer_id,
         )
 
         if not validation.accepted:
@@ -195,6 +199,7 @@ class EvidenceRetriever:
         validation = self.validator.validate_evidence_bundle(
             evidence_refs=evidence_refs,
             current_instrument_alias=current_instrument_alias,
+            customer_id=failure.customer_id,
         )
 
         memory_contribution = MemoryContribution.NONE
@@ -233,6 +238,15 @@ class EvidenceRetriever:
             current_instrument_alias=current_instrument_alias,
         )
 
+        metadata = dict(node.get("metadata", {}))
+        tags = node.get("tags", [])
+        metadata["retry_timing_scope_match"] = all((
+            f"customer:{failure.customer_id}" in tags,
+            f"merchant:{failure.merchant_id}" in tags,
+            f"instrument:{current_instrument_alias}" in tags,
+            f"failure_reason:{failure.failure_code}" in tags,
+        ))
+
         return EvidenceReference(
             waggle_node_id=node["id"],
             label=node.get("label", ""),
@@ -241,7 +255,7 @@ class EvidenceRetriever:
             temporal_status=TemporalStatus.UNKNOWN,  # Will be set by validator
             accepted=True,
             score_components=components,
-            metadata=node.get("metadata", {}),
+            metadata=metadata,
         )
 
     def _detect_memory_type(self, node: dict) -> str:

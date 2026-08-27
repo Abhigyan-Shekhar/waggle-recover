@@ -1,12 +1,9 @@
 """SQLite persistence for operational data (separate from Waggle semantic memory)."""
 from __future__ import annotations
 
-import json
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -304,7 +301,7 @@ class Database:
             SELECT COUNT(*) as cnt FROM recovery_attempts ra
             JOIN payment_failures pf ON ra.failure_id = pf.id
             WHERE pf.customer_id = ? AND pf.merchant_id = ?
-            AND ra.executed_at > datetime('now', ? || ' seconds')
+            AND datetime(ra.executed_at) > datetime('now', ? || ' seconds')
             """,
             (customer_id, merchant_id, f"-{window_seconds}"),
         )
@@ -349,6 +346,40 @@ class Database:
             )
             conn.commit()
             return cur.rowcount
+
+    def get_capture_candidates(self, payment_id: str) -> list[dict[str, Any]]:
+        """Return unresolved attempts and graph provenance for a captured payment."""
+        rows = self.execute(
+            """
+            SELECT ra.*, pf.method AS failure_method,
+                   pf.instrument_id AS failure_instrument_id,
+                   pf.failure_code AS failure_code,
+                   pf.waggle_node_id AS failure_waggle_node_id,
+                   rd.waggle_node_id AS decision_waggle_node_id
+            FROM recovery_attempts ra
+            JOIN payment_failures pf ON pf.id = ra.failure_id
+            LEFT JOIN recovery_decisions rd ON rd.id = ra.decision_id
+            WHERE pf.external_payment_id = ?
+              AND ra.outcome IN ('PENDING', 'FAILURE')
+            ORDER BY ra.executed_at
+            """,
+            (payment_id,),
+        )
+        return [dict(row) for row in rows]
+
+    def mark_attempt_captured(self, attempt_id: str, amount: int, waggle_outcome_node_id: str) -> bool:
+        """Persist a confirmed capture only if the attempt is still unresolved."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE recovery_attempts
+                SET outcome='SUCCESS', recovered_amount=?, waggle_outcome_node_id=?
+                WHERE id=? AND outcome IN ('PENDING', 'FAILURE')
+                """,
+                (amount, waggle_outcome_node_id, attempt_id),
+            )
+            conn.commit()
+            return cur.rowcount == 1
 
     def mark_webhook_processed(self, event_id: str) -> None:
         with self._connect() as conn:

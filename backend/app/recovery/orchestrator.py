@@ -20,9 +20,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import Settings, get_settings
-from app.domain.enums import MemoryContribution, OutcomeStatus, PolicyResult, RecoveryAction
+from app.domain.enums import OutcomeStatus, PolicyResult, RecoveryAction
 from app.domain.models import (
-    EvidenceBundle,
     MerchantPolicy,
     NormalizedPaymentEvent,
     PaymentFailure,
@@ -34,7 +33,7 @@ from app.memory.retrieval import EvidenceRetriever
 from app.memory.supersession import SupersessionValidator
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
-from app.recovery.decision_engine import DecisionProvider, DeterministicDecisionProvider, create_decision_provider
+from app.recovery.decision_engine import DecisionProvider, DeterministicDecisionProvider
 from app.recovery.executor import RecoveryExecutor
 from app.recovery.explanation import build_explanation, build_structured_audit
 from app.recovery.policy import PolicyEngine
@@ -225,22 +224,68 @@ class RecoveryOrchestrator:
                 "retrieval_latency_ms": round(bundle.retrieval_latency_ms, 2),
                 "evidence_accepted": len(bundle.accepted_evidence),
                 "evidence_discarded": len(bundle.discarded_evidence),
+                "accepted_instruments": self._evidence_instruments(bundle.accepted_evidence),
+                "discarded_instruments": self._evidence_instruments(bundle.discarded_evidence),
                 "retrieval_mode": bundle.retrieval_mode,
                 "memory_contribution": bundle.memory_contribution,
             },
         }
 
+    @staticmethod
+    def _evidence_instruments(references: list) -> list[str]:
+        instruments = set()
+        for ref in references:
+            metadata = ref.metadata or {}
+            instrument = (
+                metadata.get("alias")
+                if ref.memory_type == "payment_instrument"
+                else metadata.get("instrument_id") or metadata.get("alias")
+            )
+            if instrument:
+                instruments.add(str(instrument))
+        return sorted(instruments)
+
     def _handle_captured(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
         """Handle payment.captured — close any open recovery attempts."""
         LOGGER.info("Payment captured: %s", event.payment_id)
-        # Correlate the gateway capture to the original failure. This is the
-        # only path that turns an external recommendation into recovered GMV.
-        updated = self.db.mark_payment_captured(event.payment_id, event.amount)
+        # A capture is new durable evidence, not merely a SQLite status flip.
+        # Store a confirmed SUCCESS outcome with links back to the original
+        # decision and failure, then atomically close that attempt in app data.
+        candidates = self.db.get_capture_candidates(event.payment_id)
+        updated = 0
+        outcome_nodes: list[str] = []
+        for row in candidates:
+            attempt = RecoveryAttempt(
+                id=row["id"],
+                failure_id=row["failure_id"],
+                customer_id=row["customer_id"],
+                merchant_id=row["merchant_id"],
+                action_type=RecoveryAction(row["action_type"]),
+                recommended_method=row.get("recommended_method"),
+                recommended_route=row.get("recommended_route"),
+                retry_after_seconds=row.get("retry_after_seconds"),
+                decision_id=row.get("decision_id", ""),
+                executed_at=event.created_at,
+                outcome=OutcomeStatus.SUCCESS,
+                recovered_amount=event.amount,
+                method=row.get("failure_method", ""),
+                instrument_id=row.get("failure_instrument_id", ""),
+                failure_code=row.get("failure_code", ""),
+            )
+            outcome_node_id = self.adapter.store_recovery_outcome(
+                attempt=attempt,
+                decision_node_id=row.get("decision_waggle_node_id"),
+                failure_node_id=row.get("failure_waggle_node_id"),
+            )
+            if self.db.mark_attempt_captured(attempt.id, event.amount, outcome_node_id):
+                updated += 1
+                outcome_nodes.append(outcome_node_id)
         return {
             "status": "captured",
             "payment_id": event.payment_id,
             "updated_attempts": updated,
             "recovered_amount": event.amount,
+            "outcome_waggle_nodes": outcome_nodes,
         }
 
     def _build_failure(self, event: NormalizedPaymentEvent) -> PaymentFailure:

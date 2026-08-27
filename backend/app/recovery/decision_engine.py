@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
 
 from app.domain.enums import FailureClass, MemoryContribution, RecoveryAction
-from app.domain.models import EvidenceBundle, MerchantPolicy, RecoveryDecision
+from app.domain.models import EvidenceBundle, RecoveryDecision
 
 LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +113,27 @@ class DeterministicDecisionProvider(DecisionProvider):
                 discarded_evidence=bundle.discarded_evidence,
             )
 
-        # Strategy 5: Transient failure with no timing evidence → safe RETRY_AFTER with default
+        # Strategy 5: stale success history is a reason to choose a fresh method,
+        # never to reuse the timing or route attached to the superseded instrument.
+        if bundle.discarded_evidence:
+            superseded = [
+                ref for ref in bundle.discarded_evidence
+                if ref.temporal_status.value in ("SUPERSEDED", "STALE")
+            ]
+            if superseded:
+                alternative = self._find_alternative_method(bundle)
+                return RecoveryDecision(
+                    failure_id=failure.id,
+                    action=RecoveryAction.SUGGEST_METHOD,
+                    recommended_method=alternative or "upi",
+                    confidence=0.78,
+                    reason="Prior recovery evidence belongs to a superseded instrument; suggesting a fresh method.",
+                    memory_contribution=MemoryContribution.FULL_CONTEXT,
+                    evidence_references=[],
+                    discarded_evidence=bundle.discarded_evidence,
+                )
+
+        # Strategy 6: Transient failure with no timing evidence → safe RETRY_AFTER with default
         if failure.failure_class == FailureClass.TRANSIENT:
             return RecoveryDecision(
                 failure_id=failure.id,
@@ -131,7 +150,7 @@ class DeterministicDecisionProvider(DecisionProvider):
                 discarded_evidence=bundle.discarded_evidence,
             )
 
-        # Strategy 6: No useful memory → safe fallback
+        # Strategy 7: No useful memory → safe fallback
         return self._safe_fallback(bundle)
 
     def _find_timing_evidence(
@@ -157,7 +176,7 @@ class DeterministicDecisionProvider(DecisionProvider):
             if ref.memory_type in ("recovery_outcome", "recovery_decision"):
                 retry_secs = meta.get("retry_after_seconds")
                 outcome = meta.get("outcome", "")
-                if retry_secs and outcome == "SUCCESS":
+                if retry_secs and outcome == "SUCCESS" and meta.get("retry_timing_scope_match") is True:
                     retry_intervals.append(int(retry_secs))
                     timing_refs.append(ref)
 
@@ -187,7 +206,6 @@ class DeterministicDecisionProvider(DecisionProvider):
         for ref in bundle.accepted_evidence:
             meta = ref.metadata or {}
             outcome = meta.get("outcome", "")
-            action = meta.get("action_type", "")
             method = meta.get("recommended_method", "") or ""
 
             if outcome == "SUCCESS" and method and method != failure.method:
@@ -309,6 +327,7 @@ RULES:
 - You MUST select exactly one action from the allowed list.
 - Do NOT invent payment methods. Only suggest methods present in evidence or instruments.
 - Do NOT cite discarded evidence.
+- Reuse retry timing only when evidence has retry_timing_scope_match=true.
 - If evidence is insufficient, choose CUSTOMER_NUDGE or STOP.
 - Return JSON only.
 

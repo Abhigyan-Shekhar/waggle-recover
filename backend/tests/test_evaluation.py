@@ -7,7 +7,12 @@ from app.domain.enums import RecoveryAction
 from app.evaluation.baselines import BlindFixedRetryBaseline, ContextualHistoryBaseline
 from app.evaluation.generator import ScenarioGenerator
 from app.evaluation.metrics import ComparisonSummary, SystemMetrics
-from app.evaluation.runner import _emit_result, _outcome_for_decision
+from app.evaluation.runner import (
+    _decision_is_correct,
+    _emit_result,
+    _outcome_for_decision,
+    _stale_evidence_correctly_rejected,
+)
 
 
 @pytest.fixture
@@ -61,6 +66,25 @@ class TestScenarioGenerator:
         assert any(
             s1[i].customer_id != s2[i].customer_id or s1[i].failure_code != s2[i].failure_code
             for i in range(min(len(s1), len(s2)))
+        )
+
+    def test_full_200_case_generator_uses_parameter_ground_truth(self, generator):
+        scenarios = generator.generate(200)
+        assert len(scenarios) == 200
+        for scenario in scenarios:
+            if "RETRY_AFTER" in scenario.action_outcomes:
+                assert scenario.action_outcomes["RETRY_AFTER"] == "FAILURE"
+            if "SUGGEST_METHOD" in scenario.action_outcomes:
+                assert scenario.action_outcomes["SUGGEST_METHOD"] == "FAILURE"
+
+        assert any(key.startswith("RETRY_AFTER:") for scenario in scenarios for key in scenario.action_outcomes)
+        assert any(key.startswith("SUGGEST_METHOD:") for scenario in scenarios for key in scenario.action_outcomes)
+
+        failed_alternatives = [scenario for scenario in scenarios if scenario.category == "failed_alternative"]
+        assert failed_alternatives
+        assert all(
+            len([event for event in scenario.history if event.action_taken == "SUGGEST_METHOD"]) >= 2
+            for scenario in failed_alternatives
         )
 
 
@@ -168,7 +192,14 @@ class TestEvaluationEvidence:
             {"action": "SUGGEST_METHOD", "recommended_method": "upi"},
             "SUCCESS",
             4.2,
-            {"memory_contribution": "DECISIVE", "retrieval_mode": "FULL_CONTEXT", "evidence_accepted": 1, "evidence_discarded": 2},
+            {
+                "memory_contribution": "DECISIVE",
+                "retrieval_mode": "FULL_CONTEXT",
+                "evidence_accepted": 1,
+                "evidence_discarded": 2,
+                "accepted_instruments": ["card_9988"],
+                "discarded_instruments": ["card_1234"],
+            },
             recovered_amount=scenario.amount,
         )
 
@@ -177,3 +208,16 @@ class TestEvaluationEvidence:
         assert rows[0]["discarded_count"] == 2
         assert rows[0]["decision"]["recommended_method"] == "upi"
         assert rows[0]["decision"]["outcome"] == "SUCCESS"
+
+    def test_unrelated_discard_does_not_inflate_stale_metric(self, generator):
+        scenario = next(item for item in generator._curated_scenarios() if item.name == "Stale Card Trap")
+        assert not _stale_evidence_correctly_rejected(
+            scenario,
+            {"discarded_instruments": ["card_unrelated"], "accepted_instruments": []},
+        )
+
+    def test_correct_action_with_wrong_parameter_is_incorrect(self, generator):
+        scenario = next(item for item in generator._curated_scenarios() if item.name == "Timing Memory")
+        decision = {"action": "RETRY_AFTER", "retry_after_seconds": 999}
+        assert _outcome_for_decision(scenario, "RETRY_AFTER", decision) == "FAILURE"
+        assert not _decision_is_correct(scenario, "RETRY_AFTER", decision)

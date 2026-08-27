@@ -5,25 +5,19 @@ Never adds new global enums to Waggle Core.
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from waggle.graph import MemoryGraph
-from waggle.models import NodeType, RelationType
+from waggle.models import RelationType
 
 from app.domain.models import (
-    EvidenceBundle,
-    EvidenceReference,
     MerchantPolicy,
-    NormalizedPaymentEvent,
     PaymentFailure,
     PaymentInstrument,
     RecoveryAttempt,
     RecoveryDecision,
 )
-from app.domain.enums import MemoryContribution, RetrievalMode, TemporalStatus
 from app.memory import mapper
 
 LOGGER = logging.getLogger(__name__)
@@ -255,7 +249,11 @@ class WaggleRecoveryMemoryAdapter:
             result = self.graph.query(query=query, max_nodes=5, max_depth=0)
             for node in result.nodes:
                 tags = node.tags or []
-                if "payment_instrument" in tags and f"instrument:{instrument_alias}" in tags:
+                if (
+                    "payment_instrument" in tags
+                    and f"instrument:{instrument_alias}" in tags
+                    and (not customer_id or f"customer:{customer_id}" in tags)
+                ):
                     return self._node_to_dict(node)
         except Exception as e:
             LOGGER.debug("Could not find instrument node for %s: %s", instrument_alias, e)

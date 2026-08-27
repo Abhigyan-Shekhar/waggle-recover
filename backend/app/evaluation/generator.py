@@ -17,8 +17,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.domain.enums import RecoveryAction
-
 
 @dataclass
 class ScenarioHistory:
@@ -411,7 +409,7 @@ class ScenarioGenerator:
             instruments=[{"alias": "card_7777", "type": "card", "status": "active"}],
         ))
 
-        return scenarios
+        return [self._parameterize_scenario(scenario) for scenario in scenarios]
 
     def _generate_scenario(self, category: str, index: int) -> EvalScenario | None:
         """Generate a synthetic scenario for a category."""
@@ -440,7 +438,7 @@ class ScenarioGenerator:
         if not fn:
             return None
 
-        return fn(
+        scenario = fn(
             sid=f"syn_{category}_{index:03d}",
             customer_id=customer_id,
             merchant_id=merchant_id,
@@ -448,6 +446,48 @@ class ScenarioGenerator:
             method=method,
             instrument_alias=instrument_alias,
         )
+        return self._parameterize_scenario(scenario)
+
+    def _parameterize_scenario(self, scenario: EvalScenario) -> EvalScenario:
+        """Make parameterized actions succeed only for explicitly valid parameters."""
+        outcomes = dict(scenario.action_outcomes)
+
+        if "RETRY_AFTER" in outcomes:
+            outcomes["RETRY_AFTER"] = "FAILURE"
+            valid_intervals = {
+                int(item.retry_after_seconds)
+                for item in scenario.history
+                if item.event_type == "success"
+                and item.outcome == "SUCCESS"
+                and item.action_taken == "RETRY_AFTER"
+                and item.retry_after_seconds is not None
+                and item.customer_id == scenario.customer_id
+                and item.merchant_id == scenario.merchant_id
+                and item.instrument_id == scenario.instrument_id
+            }
+            if "RETRY_AFTER" in scenario.ground_truth_actions and not scenario.has_stale_memory:
+                valid_intervals.add(480)  # documented safe default when no exact timing exists
+            for seconds in valid_intervals:
+                outcomes[f"RETRY_AFTER:{seconds}"] = "SUCCESS"
+
+        if "SUGGEST_METHOD" in outcomes:
+            outcomes["SUGGEST_METHOD"] = "FAILURE"
+            valid_methods = {
+                item.method
+                for item in scenario.history
+                if item.event_type == "success"
+                and item.outcome == "SUCCESS"
+                and item.action_taken == "SUGGEST_METHOD"
+                and item.method != scenario.method
+            }
+            if "SUGGEST_METHOD" in scenario.ground_truth_actions and not valid_methods:
+                fallback = {"card": "upi", "upi": "netbanking", "netbanking": "wallet", "wallet": "card"}
+                valid_methods.add(fallback.get(scenario.method, "upi"))
+            for method in valid_methods:
+                outcomes[f"SUGGEST_METHOD:{method}"] = "SUCCESS"
+
+        scenario.action_outcomes = outcomes
+        return scenario
 
     def _gen_transient(self, sid, customer_id, merchant_id, amount, method, instrument_alias) -> EvalScenario:
         code, reason = self.rng.choice(TRANSIENT_CODES)
@@ -527,7 +567,7 @@ class ScenarioGenerator:
         return EvalScenario(
             id=sid, name="Method replacement", category="method_replacement",
             customer_id=customer_id, merchant_id=merchant_id,
-            amount=amount, method=method, instrument_id=new_alias,
+            amount=amount, method=alt_method, instrument_id=new_alias,
             failure_code="issuer_unavailable", failure_reason="Issuer unavailable",
             history=[
                 ScenarioHistory(
@@ -660,7 +700,7 @@ class ScenarioGenerator:
                     customer_id=customer_id, merchant_id=merchant_id,
                     amount=amount, method=method, instrument_id=instrument_alias,
                     failure_code="issuer_unavailable", outcome="FAILURE",
-                    action_taken="RETRY_AFTER", timestamp=_ts(0.5 - i * 0.1),
+                    action_taken="RETRY_AFTER", timestamp=_ts(0.02 - i * 0.005),
                 )
                 for i in range(3)
             ],
@@ -695,14 +735,28 @@ class ScenarioGenerator:
         )
 
     def _gen_failed_alternative(self, sid, customer_id, merchant_id, amount, method, instrument_alias) -> EvalScenario:
+        alt_method = self.rng.choice([candidate for candidate in METHODS if candidate != method])
+        alt_instrument = self.rng.choice(INSTRUMENTS[alt_method])
         return EvalScenario(
             id=sid, name="Failed alternative", category="failed_alternative",
             customer_id=customer_id, merchant_id=merchant_id,
             amount=amount, method=method, instrument_id=instrument_alias,
             failure_code="issuer_unavailable", failure_reason="Issuer unavailable",
-            history=[],
+            history=[
+                ScenarioHistory(
+                    event_type="failure", payment_id=f"pay_h_{sid}_alt_{i}",
+                    customer_id=customer_id, merchant_id=merchant_id,
+                    amount=amount, method=alt_method, instrument_id=alt_instrument,
+                    failure_code="issuer_unavailable", outcome="FAILURE",
+                    action_taken="SUGGEST_METHOD", timestamp=_ts(0.02 - i * 0.005),
+                )
+                for i in range(2)
+            ],
             action_outcomes={"RETRY_NOW": "FAILURE", "RETRY_AFTER": "FAILURE", "SUGGEST_METHOD": "FAILURE", "CUSTOMER_NUDGE": "FAILURE", "STOP": "SKIPPED"},
             ground_truth_actions=["STOP", "CUSTOMER_NUDGE"],
-            has_useful_memory=False,
-            instruments=[{"alias": instrument_alias, "type": method, "status": "active"}],
+            has_useful_memory=True,
+            instruments=[
+                {"alias": instrument_alias, "type": method, "status": "active"},
+                {"alias": alt_instrument, "type": alt_method, "status": "active"},
+            ],
         )

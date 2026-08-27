@@ -1,6 +1,7 @@
 """Evaluation API — trigger and fetch evaluation runs."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -52,6 +53,17 @@ async def start_evaluation(
 
 
 async def _run_evaluation_task(
+    run_id: str,
+    seed: int,
+    count: int,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Run blocking graph/evaluation work off the ASGI event loop."""
+    await asyncio.to_thread(_run_evaluation_sync_task, run_id, seed, count, db, settings)
+
+
+def _run_evaluation_sync_task(
     run_id: str,
     seed: int,
     count: int,

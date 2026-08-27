@@ -12,7 +12,9 @@ dependencies = [
     "pydantic-settings>=2.3.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
-    "waggle-mcp>=0.1.25",
+    # PyPI currently exposes only an obsolete 0.0.1 build. Pin the tested
+    # upstream revision so a standalone checkout resolves deterministically.
+    "waggle-mcp @ git+https://github.com/Abhigyan-Shekhar/Waggle-mcp.git@cf2118fc62f4972d2c072e9061c6e01da36ecc13",
 ]
 
 [project.optional-dependencies]

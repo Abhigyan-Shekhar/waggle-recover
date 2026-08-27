@@ -15,27 +15,27 @@ Domain semantics live in tags and metadata on Waggle's existing nodes and edges.
 
 ## Run it
 
-The backend is intended to be run beside a checkout of [Waggle-mcp](https://github.com/Abhigyan-Shekhar/Waggle-mcp), or with the published `waggle-mcp` package installed.
+The backend pins a tested Waggle Git revision, so it installs from a clean standalone checkout without requiring an adjacent repository.
 
 ```bash
 cd backend
 python -m venv .venv
 . .venv/bin/activate
-pip install -e .
+python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-For local development against the adjacent Waggle checkout:
+Run the backend tests from the same activated environment:
 
 ```bash
-PYTHONPATH=../../../src python -m pytest -q
+python -m pytest -q
 ```
 
 The dashboard is a small React/Vite client:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -46,7 +46,7 @@ Set `VITE_API_URL` only if the API is not at `http://localhost:8000`. Copy `back
 Run a curated scenario:
 
 ```bash
-curl -X POST http://localhost:8000/api/simulator/scenario/stale-card-trap/run
+curl -X POST http://localhost:8000/api/simulator/scenario/stale_card_trap/run
 ```
 
 Other API entry points include `GET /api/simulator/scenarios/curated`, `POST /api/simulator/reset`, `GET /api/payments/`, `GET /api/payments/overview`, `POST /api/evaluation/run`, and `POST /api/mandate/recommend`.

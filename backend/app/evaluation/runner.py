@@ -123,7 +123,7 @@ def _populate_memory(
     # Outcomes need a real application failure ID (SQLite enforces the foreign
     # key), while generator event IDs intentionally model separate gateway
     # attempts. Keep the latest failure context per instrument for that link.
-    failure_context: dict[tuple[str, str, str], tuple[str, str]] = {}
+    failure_context: dict[tuple[str, str, str], tuple[str, str, str, str, str]] = {}
     # Register instruments
     for instr in scenario.instruments:
         alias = instr["alias"]
@@ -160,7 +160,9 @@ def _populate_memory(
             continue  # Already handled above
 
         if hist.event_type == "failure":
-            from app.domain.models import PaymentFailure
+            from app.domain.enums import OutcomeStatus, RecoveryAction
+            from app.domain.models import PaymentFailure, RecoveryAttempt
+
             failure = PaymentFailure(
                 external_payment_id=hist.payment_id,
                 customer_id=hist.customer_id,
@@ -180,7 +182,31 @@ def _populate_memory(
             failure_context[(hist.customer_id, hist.merchant_id, hist.instrument_id)] = (
                 failure.id,
                 waggle_node_id,
+                failure.method,
+                failure.instrument_id,
+                failure.failure_code,
             )
+            if hist.action_taken:
+                failed_attempt = RecoveryAttempt(
+                    failure_id=failure.id,
+                    customer_id=hist.customer_id,
+                    merchant_id=hist.merchant_id,
+                    action_type=RecoveryAction(hist.action_taken),
+                    recommended_method=hist.method,
+                    retry_after_seconds=hist.retry_after_seconds,
+                    executed_at=hist.timestamp,
+                    outcome=OutcomeStatus.FAILURE,
+                    failure_reason_if_any=hist.failure_code,
+                    method=hist.method,
+                    instrument_id=hist.instrument_id,
+                    failure_code=hist.failure_code,
+                )
+                outcome_node_id = adapter.store_recovery_outcome(
+                    failed_attempt,
+                    failure_node_id=waggle_node_id,
+                )
+                failed_attempt.waggle_outcome_node_id = outcome_node_id
+                db.upsert_attempt(failed_attempt.model_dump(mode="json"))
 
         elif hist.event_type == "success":
             from app.domain.enums import OutcomeStatus, RecoveryAction
@@ -199,7 +225,7 @@ def _populate_memory(
                     amount=hist.amount,
                     method=hist.method,
                     instrument_id=hist.instrument_id,
-                    failure_code="historical_recovery_context",
+                    failure_code=scenario.failure_code,
                     failure_reason="Historical recovery context",
                     occurred_at=hist.timestamp,
                 )
@@ -208,7 +234,13 @@ def _populate_memory(
                 failure_dict["waggle_node_id"] = failure_node_id
                 failure_dict["created_at"] = datetime.now(UTC).isoformat()
                 db.upsert_failure(failure_dict)
-                context = (failure.id, failure_node_id)
+                context = (
+                    failure.id,
+                    failure_node_id,
+                    failure.method,
+                    failure.instrument_id,
+                    failure.failure_code,
+                )
                 failure_context[key] = context
             attempt = RecoveryAttempt(
                 failure_id=context[0],
@@ -220,6 +252,9 @@ def _populate_memory(
                 executed_at=hist.timestamp,
                 outcome=OutcomeStatus.SUCCESS,
                 recovered_amount=hist.amount,
+                method=context[2],
+                instrument_id=context[3],
+                failure_code=context[4],
             )
             waggle_node_id = adapter.store_recovery_outcome(attempt, failure_node_id=context[1])
             attempt_dict = attempt.model_dump(mode="json")
@@ -318,14 +353,14 @@ def _emit_result(
         "category": scenario.category,
         "system": system,
         "action_taken": action,
-        "action_correct": action in scenario.ground_truth_actions,
+        "action_correct": _decision_is_correct(scenario, action, decision, outcome),
         "outcome": outcome,
         "recovered_amount": recovered_amount,
         "latency_ms": latency_ms,
         "memory_contribution": str(eval_metrics.get("memory_contribution", "NONE")),
         "retrieval_mode": str(eval_metrics.get("retrieval_mode", "NONE")),
         "stale_evidence_detected": scenario.has_stale_memory,
-        "stale_evidence_correctly_rejected": bool(scenario.has_stale_memory and eval_metrics.get("evidence_discarded", 0) > 0),
+        "stale_evidence_correctly_rejected": _stale_evidence_correctly_rejected(scenario, eval_metrics),
         "evidence_count": int(eval_metrics.get("evidence_accepted", 0)),
         "discarded_count": int(eval_metrics.get("evidence_discarded", 0)),
         "decision": {**decision, "outcome": outcome, "category": scenario.category},
@@ -344,12 +379,12 @@ def _update_metrics(
     metrics.decision_latencies.append(latency_ms)
 
     # Is the action correct?
-    correct = action in scenario.ground_truth_actions
+    outcome_str = _outcome_for_decision(scenario, action, decision)
+    correct = _decision_is_correct(scenario, action, decision, outcome_str)
     if correct:
         metrics.correct_action_count += 1
 
     # Simulate outcome
-    outcome_str = _outcome_for_decision(scenario, action, decision)
     if outcome_str == "SUCCESS":
         metrics.success_count += 1
         metrics.total_recovered_amount += scenario.amount
@@ -363,6 +398,9 @@ def _update_metrics(
         metrics.category_results[cat]["correct"] += 1
     if outcome_str == "SUCCESS":
         metrics.category_results[cat]["success"] += 1
+
+    if scenario.has_stale_memory:
+        metrics.stale_evidence_detected += 1
 
 
 def _update_metrics_dict(
@@ -378,11 +416,11 @@ def _update_metrics_dict(
     metrics.total_amount_at_risk += scenario.amount
     metrics.decision_latencies.append(latency_ms)
 
-    correct = action in scenario.ground_truth_actions
+    outcome_status = outcome.get("outcome", "FAILURE")
+    correct = _decision_is_correct(scenario, action, decision, outcome_status)
     if correct:
         metrics.correct_action_count += 1
 
-    outcome_status = outcome.get("outcome", "FAILURE")
     if outcome_status == "SUCCESS":
         metrics.success_count += 1
         metrics.total_recovered_amount += outcome.get("recovered_amount", 0)
@@ -397,8 +435,7 @@ def _update_metrics_dict(
     # Stale evidence tracking
     if scenario.has_stale_memory:
         metrics.stale_evidence_detected += 1
-        # If discarded evidence > 0, we rejected something
-        if eval_metrics.get("evidence_discarded", 0) > 0:
+        if _stale_evidence_correctly_rejected(scenario, eval_metrics):
             metrics.stale_evidence_correctly_rejected += 1
 
     # Category tracking
@@ -428,3 +465,27 @@ def _outcome_for_decision(scenario: EvalScenario, action: str, decision: Any) ->
     if isinstance(value, dict):
         value = value.get("outcome", value.get("status", "FAILURE"))
     return str(value)
+
+
+def _decision_is_correct(
+    scenario: EvalScenario,
+    action: str,
+    decision: Any,
+    outcome: str | None = None,
+) -> bool:
+    """Judge both the action and its parameters against scenario ground truth."""
+    resolved_outcome = outcome or _outcome_for_decision(scenario, action, decision)
+    return action in scenario.ground_truth_actions and resolved_outcome != "FAILURE"
+
+
+def _stale_evidence_correctly_rejected(
+    scenario: EvalScenario,
+    eval_metrics: dict[str, Any],
+) -> bool:
+    """Count rejection only when the exact stale instrument was discarded."""
+    stale = scenario.stale_instrument
+    if not scenario.has_stale_memory or not stale:
+        return False
+    discarded = set(eval_metrics.get("discarded_instruments", []))
+    accepted = set(eval_metrics.get("accepted_instruments", []))
+    return stale in discarded and stale not in accepted
