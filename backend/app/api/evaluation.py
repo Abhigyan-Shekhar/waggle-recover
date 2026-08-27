@@ -60,7 +60,27 @@ async def _run_evaluation_task(
 ) -> None:
     from app.evaluation.runner import run_evaluation
     try:
-        summary = run_evaluation(seed=seed, scenario_count=count, settings=settings)
+        def persist_result(row: dict[str, Any]) -> None:
+            db.insert_evaluation_result({
+                "id": str(uuid.uuid4()),
+                "run_id": run_id,
+                "scenario_id": row["scenario_id"],
+                "system": row["system"],
+                "action_taken": row["action_taken"],
+                "action_correct": int(row["action_correct"]),
+                "recovered_amount": row["recovered_amount"],
+                "latency_ms": row["latency_ms"],
+                "memory_contribution": row["memory_contribution"],
+                "retrieval_mode": row["retrieval_mode"],
+                "stale_evidence_detected": int(row["stale_evidence_detected"]),
+                "stale_evidence_correctly_rejected": int(row["stale_evidence_correctly_rejected"]),
+                "evidence_count": row["evidence_count"],
+                "discarded_count": row["discarded_count"],
+                "decision_json": json.dumps(row["decision"]),
+                "created_at": datetime.now(UTC).isoformat(),
+            })
+
+        summary = run_evaluation(seed=seed, scenario_count=count, settings=settings, result_sink=persist_result)
         db.upsert_evaluation_run({
             "id": run_id,
             "seed": seed,
@@ -112,6 +132,23 @@ async def get_run(run_id: str, db: Database = Depends(get_db)) -> dict[str, Any]
         except Exception:
             r["summary"] = None
     return r
+
+
+@router.get("/runs/{run_id}/results")
+async def get_run_results(run_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
+    rows = db.execute(
+        "SELECT * FROM evaluation_results WHERE run_id = ? ORDER BY scenario_id, system",
+        (run_id,),
+    )
+    data = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["decision"] = json.loads(item.pop("decision_json"))
+        except Exception:
+            item["decision"] = {}
+        data.append(item)
+    return {"data": data, "count": len(data)}
 
 
 @router.post("/run-sync")

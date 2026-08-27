@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.domain.enums import RecoveryAction
 from app.evaluation.baselines import BlindFixedRetryBaseline, ContextualHistoryBaseline
 from app.evaluation.generator import ScenarioGenerator
 from app.evaluation.metrics import ComparisonSummary, SystemMetrics
-from app.domain.enums import RecoveryAction
+from app.evaluation.runner import _emit_result, _outcome_for_decision
 
 
 @pytest.fixture
@@ -141,3 +142,38 @@ class TestMetrics:
         assert "improvements" in d
         assert d["improvements"]["c_vs_a_accuracy"] > 0
         assert d["improvements"]["c_vs_b_accuracy"] > 0
+
+
+class TestEvaluationEvidence:
+    def test_retry_outcome_requires_matching_timing_parameter(self, generator):
+        scenario = generator._curated_scenarios()[0]
+        scenario.action_outcomes = {"RETRY_AFTER": "SUCCESS", "RETRY_AFTER:60": "FAILURE"}
+
+        outcome = _outcome_for_decision(
+            scenario,
+            "RETRY_AFTER",
+            {"action": "RETRY_AFTER", "retry_after_seconds": 60},
+        )
+
+        assert outcome == "FAILURE"
+
+    def test_result_sink_records_auditable_stale_rejection(self, generator):
+        scenario = next(item for item in generator._curated_scenarios() if item.name == "Stale Card Trap")
+        rows = []
+
+        _emit_result(
+            rows.append,
+            scenario,
+            "system_c",
+            {"action": "SUGGEST_METHOD", "recommended_method": "upi"},
+            "SUCCESS",
+            4.2,
+            {"memory_contribution": "DECISIVE", "retrieval_mode": "FULL_CONTEXT", "evidence_accepted": 1, "evidence_discarded": 2},
+            recovered_amount=scenario.amount,
+        )
+
+        assert rows[0]["stale_evidence_detected"] is True
+        assert rows[0]["stale_evidence_correctly_rejected"] is True
+        assert rows[0]["discarded_count"] == 2
+        assert rows[0]["decision"]["recommended_method"] == "upi"
+        assert rows[0]["decision"]["outcome"] == "SUCCESS"

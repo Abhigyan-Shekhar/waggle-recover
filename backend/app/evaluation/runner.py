@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,8 @@ from typing import Any
 from app.config import Settings, get_settings
 from app.domain.models import NormalizedPaymentEvent, PaymentInstrument
 from app.evaluation.baselines import BlindFixedRetryBaseline, ContextualHistoryBaseline
-from app.evaluation.generator import EvalScenario, ScenarioGenerator, ScenarioHistory
+from app.evaluation.generator import EvalScenario, ScenarioGenerator
 from app.evaluation.metrics import ComparisonSummary, SystemMetrics
-from app.memory.supersession import SupersessionValidator
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
 from app.recovery.orchestrator import RecoveryOrchestrator
@@ -31,6 +31,7 @@ def run_evaluation(
     db_path: str | None = None,
     waggle_db_path: str | None = None,
     settings: Settings | None = None,
+    result_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> ComparisonSummary:
     """
     Run full evaluation: load scenarios, populate Waggle memory, evaluate all three systems.
@@ -93,13 +94,13 @@ def run_evaluation(
         _populate_memory(adapter, db, orchestrator, scenario)
 
         # Step 2: Evaluate Baseline A
-        _eval_baseline_a(scenario, baseline_a, metrics_a)
+        _eval_baseline_a(scenario, baseline_a, metrics_a, result_sink)
 
         # Step 3: Evaluate Baseline B
-        _eval_baseline_b(scenario, baseline_b, metrics_b)
+        _eval_baseline_b(scenario, baseline_b, metrics_b, result_sink)
 
         # Step 4: Evaluate System C (Waggle Recover)
-        _eval_system_c(scenario, orchestrator, metrics_c)
+        _eval_system_c(scenario, orchestrator, metrics_c, result_sink)
 
     summary = ComparisonSummary(
         baseline_a=metrics_a,
@@ -124,7 +125,6 @@ def _populate_memory(
     # attempts. Keep the latest failure context per instrument for that link.
     failure_context: dict[tuple[str, str, str], tuple[str, str]] = {}
     # Register instruments
-    prev_alias = None
     for instr in scenario.instruments:
         alias = instr["alias"]
         itype = instr["type"]
@@ -154,27 +154,12 @@ def _populate_memory(
         instr_dict["waggle_node_id"] = waggle_node_id
         db.upsert_instrument(instr_dict)
 
-        prev_alias = alias
-
     # Store historical events as Waggle nodes
     for hist in scenario.history:
         if hist.event_type == "instrument_added":
             continue  # Already handled above
 
         if hist.event_type == "failure":
-            event = NormalizedPaymentEvent(
-                event_type="payment.failed",
-                payment_id=hist.payment_id,
-                customer_id=hist.customer_id,
-                merchant_id=hist.merchant_id,
-                amount=hist.amount,
-                method=hist.method,
-                instrument_id=hist.instrument_id,
-                error_code=hist.failure_code,
-                error_description=hist.failure_code,
-                created_at=hist.timestamp,
-            )
-            from app.domain.enums import classify_failure
             from app.domain.models import PaymentFailure
             failure = PaymentFailure(
                 external_payment_id=hist.payment_id,
@@ -198,9 +183,8 @@ def _populate_memory(
             )
 
         elif hist.event_type == "success":
-            from app.domain.models import RecoveryAttempt
             from app.domain.enums import OutcomeStatus, RecoveryAction
-            from app.domain.models import PaymentFailure
+            from app.domain.models import PaymentFailure, RecoveryAttempt
 
             key = (hist.customer_id, hist.merchant_id, hist.instrument_id)
             context = failure_context.get(key)
@@ -247,30 +231,37 @@ def _eval_baseline_a(
     scenario: EvalScenario,
     baseline: BlindFixedRetryBaseline,
     metrics: SystemMetrics,
+    result_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     start = time.time()
     decision = baseline.decide(scenario)
     latency_ms = (time.time() - start) * 1000
 
     _update_metrics(scenario, decision.action.value, decision, metrics, latency_ms)
+    _emit_result(result_sink, scenario, "baseline_a", decision.model_dump(mode="json"),
+                 _outcome_for_decision(scenario, decision.action.value, decision), latency_ms, {})
 
 
 def _eval_baseline_b(
     scenario: EvalScenario,
     baseline: ContextualHistoryBaseline,
     metrics: SystemMetrics,
+    result_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     start = time.time()
     decision = baseline.decide(scenario)
     latency_ms = (time.time() - start) * 1000
 
     _update_metrics(scenario, decision.action.value, decision, metrics, latency_ms)
+    _emit_result(result_sink, scenario, "baseline_b", decision.model_dump(mode="json"),
+                 _outcome_for_decision(scenario, decision.action.value, decision), latency_ms, {})
 
 
 def _eval_system_c(
     scenario: EvalScenario,
     orchestrator: RecoveryOrchestrator,
     metrics: SystemMetrics,
+    result_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     event = NormalizedPaymentEvent(
         event_type="payment.failed",
@@ -303,6 +294,42 @@ def _eval_system_c(
 
     action = decision["action"]
     _update_metrics_dict(scenario, action, decision, outcome, eval_metrics, metrics, latency_ms)
+    _emit_result(result_sink, scenario, "system_c", decision, outcome.get("outcome", "FAILURE"),
+                 latency_ms, eval_metrics, outcome.get("recovered_amount", 0))
+
+
+def _emit_result(
+    sink: Callable[[dict[str, Any]], None] | None,
+    scenario: EvalScenario,
+    system: str,
+    decision: dict[str, Any],
+    outcome: str,
+    latency_ms: float,
+    eval_metrics: dict[str, Any],
+    recovered_amount: int | None = None,
+) -> None:
+    if sink is None:
+        return
+    action = str(decision.get("action", ""))
+    if recovered_amount is None:
+        recovered_amount = scenario.amount if outcome == "SUCCESS" else 0
+    sink({
+        "scenario_id": scenario.id,
+        "category": scenario.category,
+        "system": system,
+        "action_taken": action,
+        "action_correct": action in scenario.ground_truth_actions,
+        "outcome": outcome,
+        "recovered_amount": recovered_amount,
+        "latency_ms": latency_ms,
+        "memory_contribution": str(eval_metrics.get("memory_contribution", "NONE")),
+        "retrieval_mode": str(eval_metrics.get("retrieval_mode", "NONE")),
+        "stale_evidence_detected": scenario.has_stale_memory,
+        "stale_evidence_correctly_rejected": bool(scenario.has_stale_memory and eval_metrics.get("evidence_discarded", 0) > 0),
+        "evidence_count": int(eval_metrics.get("evidence_accepted", 0)),
+        "discarded_count": int(eval_metrics.get("evidence_discarded", 0)),
+        "decision": {**decision, "outcome": outcome, "category": scenario.category},
+    })
 
 
 def _update_metrics(
