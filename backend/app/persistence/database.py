@@ -425,7 +425,8 @@ class Database:
     def get_all_recoveries(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.execute(
             """
-            SELECT pf.*, rd.action, rd.confidence, rd.reason, rd.status as decision_status,
+            SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
+                   rd.confidence, rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    ra.outcome, ra.recovered_amount, ra.executed_at as attempt_at, rd.id as decision_id
             FROM payment_failures pf
@@ -441,7 +442,8 @@ class Database:
     def get_recovery_by_failure_id(self, failure_id: str) -> dict[str, Any] | None:
         row = self.execute_one(
             """
-            SELECT pf.*, rd.action, rd.confidence, rd.reason, rd.status as decision_status,
+            SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
+                   rd.confidence, rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    ra.outcome, ra.recovered_amount, rd.id as decision_id
             FROM payment_failures pf
