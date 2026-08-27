@@ -18,8 +18,43 @@ from app.recovery.decision_engine import DecisionProvider, DeterministicDecision
 LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_PAYMENT_METHODS = {"card", "upi", "netbanking", "wallet", "emi", "paylater"}
+PREFERRED_PAYMENT_METHODS = ("upi", "netbanking", "wallet", "card", "emi", "paylater")
 TECHNICAL_MIN_RETRY_SECONDS = 60
 TECHNICAL_MAX_RETRY_SECONDS = 7200
+AGENT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": [action.value for action in RecoveryAction]},
+        "retry_after_seconds": {
+            "anyOf": [
+                {
+                    "type": "integer",
+                    "minimum": TECHNICAL_MIN_RETRY_SECONDS,
+                    "maximum": TECHNICAL_MAX_RETRY_SECONDS,
+                },
+                {"type": "null"},
+            ],
+        },
+        "recommended_method": {
+            "anyOf": [
+                {"type": "string", "enum": list(PREFERRED_PAYMENT_METHODS)},
+                {"type": "null"},
+            ],
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+    },
+    "required": [
+        "action",
+        "retry_after_seconds",
+        "recommended_method",
+        "confidence",
+        "reason",
+        "evidence_ids",
+    ],
+    "additionalProperties": False,
+}
 
 
 class AgentModelClient(Protocol):
@@ -65,7 +100,14 @@ class GroqQwenClient:
                 {"role": "user", "content": json.dumps(trusted_context, separators=(",", ":"))},
             ],
             temperature=temperature,
-            response_format={"type": "json_object"},
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "recovery_candidate",
+                    "strict": True,
+                    "schema": AGENT_RESPONSE_SCHEMA,
+                },
+            },
         )
         return response.choices[0].message.content or ""
 
@@ -301,6 +343,13 @@ class AgentDecisionProvider(DecisionProvider):
         if action == RecoveryAction.SUGGEST_METHOD and not method:
             errors.append("SUGGEST_METHOD requires recommended_method")
 
+        # Normalize fields that are not meaningful for the selected action so
+        # the candidate and audit trace cannot contain contradictory parameters.
+        if action != RecoveryAction.RETRY_AFTER:
+            retry_seconds = None
+        if action not in (RecoveryAction.RETRY_AFTER, RecoveryAction.SUGGEST_METHOD):
+            method = None
+
         confidence = data.get("confidence")
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 1:
             errors.append("confidence must be between 0 and 1")
@@ -343,6 +392,12 @@ class AgentDecisionProvider(DecisionProvider):
     def build_trusted_context(bundle: EvidenceBundle) -> dict[str, Any]:
         failure = bundle.current_failure
         policy = bundle.merchant_policy
+        blocked_methods = set(policy.blocked_methods if policy is not None else [])
+        safe_alternatives = [
+            method
+            for method in PREFERRED_PAYMENT_METHODS
+            if method != failure.method and method not in blocked_methods
+        ]
         return {
             "instruction": "Produce a candidate recovery action only. Never execute money movement.",
             "current_failure": {
@@ -365,6 +420,7 @@ class AgentDecisionProvider(DecisionProvider):
                 }
                 for item in bundle.current_instruments
             ],
+            "safe_alternative_methods": safe_alternatives,
             "trusted_historical_evidence": [AgentDecisionProvider._evidence_summary(ref, usable=True) for ref in bundle.accepted_evidence],
             "rejected_memory_for_transparency_only": [
                 AgentDecisionProvider._evidence_summary(ref, usable=False) for ref in bundle.discarded_evidence
@@ -408,6 +464,10 @@ class AgentDecisionProvider(DecisionProvider):
             "authoritative. Use ONLY trusted_historical_evidence as evidence. Items under "
             "rejected_memory_for_transparency_only are forbidden evidence: never cite them, reuse their timing, or "
             "override their stale/superseded status. You produce a candidate action only; you never execute payments. "
+            "When supersession rejects the retrieved success/timing memory and no trusted timing evidence remains, "
+            "prefer SUGGEST_METHOD using safe_alternative_methods over retrying the same failed method. "
+            "Set retry_after_seconds to null unless action is RETRY_AFTER, and set recommended_method to null unless "
+            "the selected action uses a payment method. "
             "Return one JSON object with exactly these fields: action, retry_after_seconds, recommended_method, "
             "confidence, reason, evidence_ids. action must be an existing RecoveryAction. evidence_ids may contain "
             "only accepted evidence IDs. Give a short auditable reason, not hidden chain-of-thought."

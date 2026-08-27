@@ -119,7 +119,10 @@ def test_agent_receives_only_accepted_evidence_as_usable_memory(evidence_bundle)
     assert context["trusted_historical_evidence"][0]["usable_as_evidence"] is True
     assert context["rejected_memory_for_transparency_only"][0]["evidence_id"] == "rejected-old-card"
     assert context["rejected_memory_for_transparency_only"][0]["usable_as_evidence"] is False
+    assert context["safe_alternative_methods"][0] == "upi"
+    assert "card" not in context["safe_alternative_methods"]
     assert "never cite" in client.system_prompts[0].lower()
+    assert "prefer suggest_method" in client.system_prompts[0].lower()
     assert decision.evidence_references[0].waggle_node_id == "accepted-1"
     assert trace["agent_fallback"] is False
 
@@ -131,6 +134,19 @@ def test_agent_cannot_cite_rejected_evidence(evidence_bundle):
     assert trace["agent_fallback"] is True
     assert "Model cited rejected evidence" in trace["fallback_reason"]
     assert all(ref.waggle_node_id != "rejected-old-card" for ref in decision.evidence_references)
+
+
+def test_agent_normalizes_parameters_irrelevant_to_selected_action(evidence_bundle):
+    raw = candidate(action="SUGGEST_METHOD", retry_after_seconds=300, recommended_method="upi")
+    decision, trace = AgentDecisionProvider(
+        model="test-qwen",
+        model_client=FakeModelClient(raw),
+    ).decide_with_trace(evidence_bundle)
+
+    assert trace["agent_fallback"] is False
+    assert decision.action == RecoveryAction.SUGGEST_METHOD
+    assert decision.retry_after_seconds is None
+    assert trace["candidate_retry_after_seconds"] is None
 
 
 @pytest.mark.parametrize(
