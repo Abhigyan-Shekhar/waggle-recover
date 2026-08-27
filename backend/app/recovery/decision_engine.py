@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Any
 
 from app.domain.enums import FailureClass, MemoryContribution, RecoveryAction
 from app.domain.models import EvidenceBundle, RecoveryDecision
@@ -27,14 +28,20 @@ DEFAULT_RETRY_SECONDS = 480  # 8 minutes fallback
 
 
 class DecisionProvider(ABC):
+    mode = "unknown"
+
     @abstractmethod
     def decide(self, bundle: EvidenceBundle) -> RecoveryDecision:
         """Produce a candidate recovery decision from the evidence bundle."""
 
+    def decide_with_trace(self, bundle: EvidenceBundle) -> tuple[RecoveryDecision, dict[str, Any]]:
+        """Compatibility seam for providers that expose structured execution traces."""
+        decision = self.decide(bundle)
+        return decision, {"decision_mode": self.mode, "agent_fallback": False, "stages": []}
+
 
 class DeterministicDecisionProvider(DecisionProvider):
-    """
-    Rule-based deterministic decision provider.
+    """Rule-based deterministic decision provider.
 
     Decision strategies implemented:
     1. Timing memory: reuse successful retry interval from accepted evidence
@@ -43,6 +50,8 @@ class DeterministicDecisionProvider(DecisionProvider):
     4. Repeated failures: escalate or stop
     5. No memory: safe contextual fallback
     """
+
+    mode = "deterministic"
 
     def decide(self, bundle: EvidenceBundle) -> RecoveryDecision:
         failure = bundle.current_failure
@@ -259,9 +268,12 @@ class LLMDecisionProvider(DecisionProvider):
     All output is validated by PolicyEngine before execution.
     """
 
-    def __init__(self, provider: str = "openai", model: str = "gpt-4o-mini") -> None:
+    mode = "llm"
+
+    def __init__(self, provider: str = "openai", model: str = "gpt-4o-mini", api_key: str = "") -> None:
         self.provider = provider
         self.model = model
+        self.api_key = api_key
         self._client = None
 
     def decide(self, bundle: EvidenceBundle) -> RecoveryDecision:
@@ -337,7 +349,7 @@ Return this JSON:
     def _call_llm(self, prompt: str) -> str:
         if self.provider == "openai":
             import openai
-            client = openai.OpenAI()
+            client = openai.OpenAI(api_key=self.api_key or None)
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
@@ -347,7 +359,7 @@ Return this JSON:
             return response.choices[0].message.content or ""
         elif self.provider == "google":
             from google import genai
-            client = genai.Client()
+            client = genai.Client(api_key=self.api_key or None)
             response = client.models.generate_content(
                 model=self.model,
                 contents=prompt,
@@ -408,8 +420,25 @@ Return this JSON:
         )
 
 
-def create_decision_provider(provider: str = "deterministic", **kwargs) -> DecisionProvider:
+def create_decision_provider(provider: str = "deterministic", *, settings: Any | None = None, **kwargs) -> DecisionProvider:
     """Factory for decision providers."""
-    if provider == "llm":
+    normalized = provider.lower().strip()
+    if normalized == "llm":
+        if settings is not None:
+            kwargs.setdefault("provider", settings.llm_provider)
+            kwargs.setdefault("model", settings.llm_model)
+            kwargs.setdefault(
+                "api_key",
+                settings.openai_api_key if settings.llm_provider == "openai" else settings.gemini_api_key,
+            )
         return LLMDecisionProvider(**kwargs)
+    if normalized == "agent":
+        from app.recovery.agent import AgentDecisionProvider
+
+        if settings is not None:
+            kwargs.setdefault("api_key", settings.groq_api_key)
+            kwargs.setdefault("model", settings.groq_model)
+            kwargs.setdefault("temperature", settings.agent_temperature)
+            kwargs.setdefault("timeout_seconds", settings.agent_timeout_seconds)
+        return AgentDecisionProvider(**kwargs)
     return DeterministicDecisionProvider()

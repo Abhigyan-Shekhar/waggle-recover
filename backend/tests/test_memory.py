@@ -10,6 +10,7 @@ import pytest
 from waggle.embeddings import EmbeddingModel
 from app.domain.enums import TemporalStatus
 from app.domain.models import (
+    EvidenceReference,
     PaymentFailure,
     PaymentInstrument,
     RecoveryAttempt,
@@ -325,3 +326,88 @@ class TestStoreRecoveryDecision:
         # Both nodes should exist
         assert tmp_graph.get_node(failure_node_id)
         assert tmp_graph.get_node(dec_node_id)
+
+    def test_decision_graph_keeps_rejected_memory_and_incoming_outcome(self, adapter):
+        """The UI graph must survive directed incoming edges and expose stale provenance."""
+        old_instrument = PaymentInstrument(
+            customer_id="CUST-GRAPH-001",
+            instrument_type="card",
+            fingerprint_or_safe_alias="card_old_graph",
+            status="superseded",
+        )
+        old_instrument_id = adapter.store_payment_instrument(old_instrument)
+        new_instrument = PaymentInstrument(
+            customer_id="CUST-GRAPH-001",
+            instrument_type="card",
+            fingerprint_or_safe_alias="card_new_graph",
+            supersedes_instrument_id="card_old_graph",
+        )
+        adapter.store_payment_instrument(new_instrument, old_instrument_node_id=old_instrument_id)
+
+        historical_failure = PaymentFailure(
+            external_payment_id="pay_graph_old",
+            customer_id="CUST-GRAPH-001",
+            merchant_id="MERCH-GRAPH",
+            amount=800000,
+            method="card",
+            instrument_id="card_old_graph",
+            failure_code="issuer_unavailable",
+        )
+        historical_id = adapter.store_payment_failure(historical_failure)
+        current_failure = PaymentFailure(
+            external_payment_id="pay_graph_current",
+            customer_id="CUST-GRAPH-001",
+            merchant_id="MERCH-GRAPH",
+            amount=800000,
+            method="card",
+            instrument_id="card_new_graph",
+            failure_code="issuer_unavailable",
+        )
+        current_id = adapter.store_payment_failure(current_failure)
+
+        rejected = EvidenceReference(
+            waggle_node_id=historical_id,
+            label="Old card recovery memory",
+            memory_type="payment_failure",
+            relevance_score=0.91,
+            temporal_status=TemporalStatus.SUPERSEDED,
+            accepted=False,
+            rejection_reason="card_old_graph was superseded by card_new_graph",
+            metadata={"instrument_id": "card_old_graph"},
+        )
+        decision = RecoveryDecision(
+            failure_id=current_failure.id,
+            action=RecoveryAction.SUGGEST_METHOD,
+            recommended_method="upi",
+            confidence=0.88,
+            reason="Reject stale card memory",
+            discarded_evidence=[rejected],
+        )
+        decision_id = adapter.store_recovery_decision(
+            decision,
+            failure_node_id=current_id,
+            customer_id="CUST-GRAPH-001",
+            merchant_id="MERCH-GRAPH",
+        )
+        attempt = RecoveryAttempt(
+            failure_id=current_failure.id,
+            customer_id="CUST-GRAPH-001",
+            merchant_id="MERCH-GRAPH",
+            action_type=RecoveryAction.SUGGEST_METHOD,
+            recommended_method="upi",
+            outcome=OutcomeStatus.SUCCESS,
+            recovered_amount=800000,
+            method="card",
+            instrument_id="card_new_graph",
+            failure_code="issuer_unavailable",
+        )
+        outcome_id = adapter.store_recovery_outcome(attempt, decision_node_id=decision_id, failure_node_id=current_id)
+
+        graph = adapter.get_nodes_and_edges_for_decision(decision_id)
+        node_ids = {node["id"] for node in graph["nodes"]}
+        relations = {(edge["relationship"], edge.get("metadata", {}).get("relation")) for edge in graph["edges"]}
+
+        assert {decision_id, current_id, historical_id, outcome_id}.issubset(node_ids)
+        assert ("contradicts", "rejected_evidence") in relations
+        assert ("updates", None) in relations
+        assert graph["root_id"] == decision_id

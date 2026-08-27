@@ -28,6 +28,10 @@ llm = [
     "openai>=1.30.0",
     "google-genai>=1.0.0",
 ]
+agent = [
+    "langgraph>=1.0,<2",
+    "groq>=1.0,<2",
+]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

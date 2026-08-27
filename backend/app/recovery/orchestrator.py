@@ -92,6 +92,7 @@ class RecoveryOrchestrator:
         merchant_policy: MerchantPolicy | None = None,
         simulation_outcomes: dict[str, Any] | None = None,
         simulate: bool = True,
+        decision_provider: DecisionProvider | None = None,
     ) -> dict[str, Any]:
         """
         Main entry point. Processes a normalized payment event through the full pipeline.
@@ -137,7 +138,8 @@ class RecoveryOrchestrator:
 
         # 7. Stage 1: Candidate decision
         decision_start = time.time()
-        candidate = self.decision_provider.decide(bundle)
+        active_provider = decision_provider or self.decision_provider
+        candidate, decision_trace = active_provider.decide_with_trace(bundle)
         decision_latency_ms = (time.time() - decision_start) * 1000
 
         # 8. Stage 2: Policy validation
@@ -152,6 +154,29 @@ class RecoveryOrchestrator:
         final_decision = self._apply_policy(candidate, policy_result)
         final_decision.policy_result = policy_result.result
         final_decision.policy_note = policy_result.formatted()
+
+        decision_trace.update({
+            "policy_result": policy_result.result.value,
+            "final_action": final_decision.action.value,
+            "final_retry_after_seconds": final_decision.retry_after_seconds,
+            "final_recommended_method": final_decision.recommended_method,
+        })
+        if decision_trace.get("decision_mode") == "agent":
+            decision_trace["stages"] = [
+                *decision_trace.get("stages", []),
+                {
+                    "key": "policy_guard",
+                    "label": "Policy Guard",
+                    "status": "complete" if policy_result.result == PolicyResult.ALLOW else "warning",
+                    "detail": f"{policy_result.result.value}: deterministic merchant policy remained final authority.",
+                },
+                {
+                    "key": "final_action",
+                    "label": "Final Action",
+                    "status": "complete",
+                    "detail": self._trace_action_summary(final_decision),
+                },
+            ]
 
         # 9. Build explanation
         explanation = build_explanation(bundle, final_decision, policy_result)
@@ -208,6 +233,8 @@ class RecoveryOrchestrator:
 
         # 14. Build audit record
         audit = build_structured_audit(bundle, final_decision, policy_result)
+        if decision_trace.get("decision_mode") == "agent":
+            audit["agent_trace"] = decision_trace
 
         return {
             "status": "processed",
@@ -218,6 +245,8 @@ class RecoveryOrchestrator:
             "outcome": attempt.model_dump(mode="json"),
             "outcome_waggle_node": outcome_node_id,
             "audit": audit,
+            "decision_mode": decision_trace.get("decision_mode", "deterministic"),
+            "agent_trace": decision_trace if decision_trace.get("decision_mode") == "agent" else None,
             "metrics": {
                 "total_latency_ms": round(total_latency_ms, 2),
                 "decision_latency_ms": round(decision_latency_ms, 2),
@@ -363,11 +392,22 @@ class RecoveryOrchestrator:
 
         if policy_result.result == PolicyResult.BLOCK:
             candidate.action = policy_result.modified_action or RecoveryAction.STOP
+            candidate.retry_after_seconds = None
+            candidate.recommended_method = None
+            candidate.recommended_route = None
             candidate.reason = f"Policy BLOCKED: {policy_result.block_reason}"
             candidate.confidence = 1.0  # Certain about STOP
             return candidate
 
         return candidate
+
+    @staticmethod
+    def _trace_action_summary(decision: RecoveryDecision) -> str:
+        if decision.retry_after_seconds is not None:
+            return f"{decision.action.value} after {decision.retry_after_seconds}s"
+        if decision.recommended_method:
+            return f"{decision.action.value} → {decision.recommended_method.upper()}"
+        return decision.action.value
 
     def _update_instrument_success(self, customer_id: str, instrument_id: str) -> None:
         """Update last_success_at for an instrument after successful recovery."""

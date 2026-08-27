@@ -137,6 +137,16 @@ class WaggleRecoveryMemoryAdapter:
             except Exception as e:
                 LOGGER.debug("Could not link decision to failure: %s", e)
 
+        # Persist the evidence provenance that produced this decision. Accepted
+        # memories are dependencies; rejected memories are contradictions for
+        # this decision because their historical result is no longer valid in
+        # the current temporal context. Keeping these as graph edges makes the
+        # retrieval and supersession decision auditable after the request ends.
+        for reference in decision.evidence_references:
+            self._link_decision_evidence(node_id, reference, accepted=True)
+        for reference in decision.discarded_evidence:
+            self._link_decision_evidence(node_id, reference, accepted=False)
+
         LOGGER.debug("Stored decision %s as Waggle node %s", decision.id, node_id)
         return node_id
 
@@ -327,23 +337,82 @@ class WaggleRecoveryMemoryAdapter:
     def get_nodes_and_edges_for_decision(self, decision_node_id: str) -> dict[str, Any]:
         """Get the full evidence subgraph for a decision (for the Memory Graph UI)."""
         try:
-            result = self.graph.get_related(node_id=decision_node_id, max_depth=2)
-            nodes = [self._node_to_dict(n) for n in result.nodes]
-            edges = [
-                {
-                    "id": e.id,
-                    "source_id": e.source_id,
-                    "target_id": e.target_id,
-                    "relationship": e.relationship,
-                    "weight": e.weight,
-                    "metadata": e.metadata,
+            # Waggle's public snapshot is used instead of get_related here.
+            # The current Waggle release expands directed edges as an undirected
+            # neighborhood, then scores them using directed shortest paths. An
+            # incoming outcome -> decision edge can therefore raise
+            # NetworkXNoPath and previously made this endpoint return an empty
+            # graph even though the nodes and edges were stored correctly.
+            snapshot = self.graph.get_graph_snapshot()
+            all_nodes = {node["id"]: node for node in snapshot.get("nodes", [])}
+            if decision_node_id not in all_nodes:
+                return {"nodes": [], "edges": [], "message": "Decision node not found in Waggle"}
+
+            all_edges = snapshot.get("edges", [])
+            adjacency: dict[str, set[str]] = {node_id: set() for node_id in all_nodes}
+            for edge in all_edges:
+                source_id = edge.get("source_id")
+                target_id = edge.get("target_id")
+                if source_id in adjacency and target_id in adjacency:
+                    adjacency[source_id].add(target_id)
+                    adjacency[target_id].add(source_id)
+
+            included = {decision_node_id}
+            frontier = {decision_node_id}
+            for _ in range(2):
+                frontier = {
+                    neighbour
+                    for node_id in frontier
+                    for neighbour in adjacency.get(node_id, set())
+                    if neighbour not in included
                 }
-                for e in result.edges
+                included.update(frontier)
+
+            # Include the instrument nodes named by visible event/evidence nodes
+            # so the temporal card_9988 --updates--> card_1234 relationship is
+            # present in the decision graph, rather than merely written in text.
+            instrument_aliases = {
+                str(all_nodes[node_id].get("metadata", {}).get(key))
+                for node_id in included
+                for key in ("instrument_id", "alias")
+                if all_nodes[node_id].get("metadata", {}).get(key)
+            }
+            for node_id, node in all_nodes.items():
+                metadata = node.get("metadata", {})
+                if "payment_instrument" in (node.get("tags") or []) and metadata.get("alias") in instrument_aliases:
+                    included.add(node_id)
+
+            nodes = [all_nodes[node_id] for node_id in included]
+            edges = [
+                edge
+                for edge in all_edges
+                if edge.get("source_id") in included and edge.get("target_id") in included
             ]
-            return {"nodes": nodes, "edges": edges}
+            return {"root_id": decision_node_id, "nodes": nodes, "edges": edges}
         except Exception as e:
-            LOGGER.debug("Could not get graph for decision %s: %s", decision_node_id, e)
-            return {"nodes": [], "edges": []}
+            LOGGER.exception("Could not get graph for decision %s", decision_node_id)
+            return {"nodes": [], "edges": [], "message": str(e)}
+
+    def _link_decision_evidence(self, decision_node_id: str, reference: Any, *, accepted: bool) -> None:
+        """Attach one retrieved memory to its decision with validation provenance."""
+        if not reference.waggle_node_id:
+            return
+        try:
+            self.graph.add_edge(
+                source_id=decision_node_id,
+                target_id=reference.waggle_node_id,
+                relationship=RelationType.DEPENDS_ON if accepted else RelationType.CONTRADICTS,
+                weight=max(0.01, float(reference.relevance_score or 0.0)),
+                metadata={
+                    "relation": "accepted_evidence" if accepted else "rejected_evidence",
+                    "validation_status": "accepted" if accepted else "rejected",
+                    "temporal_status": str(reference.temporal_status),
+                    "rejection_reason": reference.rejection_reason,
+                    "relevance_score": reference.relevance_score,
+                },
+            )
+        except Exception as e:
+            LOGGER.warning("Could not link %s evidence %s: %s", "accepted" if accepted else "rejected", reference.waggle_node_id, e)
 
     def link_nodes(
         self,

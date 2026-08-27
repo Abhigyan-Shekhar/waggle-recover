@@ -1,20 +1,30 @@
 """Simulator API — fire synthetic payment failures for demo and testing."""
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.domain.models import MerchantPolicy, NormalizedPaymentEvent
+from app.config import Settings, get_settings
 from app.domain.enums import RecoveryAction
+from app.domain.models import MerchantPolicy, NormalizedPaymentEvent
 from app.main import get_db, get_orchestrator
-from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
+from app.recovery.decision_engine import DecisionProvider, create_decision_provider
 from app.recovery.orchestrator import RecoveryOrchestrator
 
 router = APIRouter()
+
+
+def _simulator_decision_provider(decision_mode: str, settings: Settings) -> DecisionProvider:
+    """Resolve the demo-only mode without mutating the webhook provider singleton."""
+    normalized = decision_mode.lower().strip()
+    if normalized not in {"deterministic", "agent"}:
+        raise HTTPException(status_code=422, detail="decision_mode must be deterministic or agent")
+    return create_decision_provider(normalized, settings=settings)
 
 # Canned demo scenarios
 DEMO_SCENARIOS = {
@@ -104,6 +114,7 @@ async def simulate_payment_failure(
     body: dict[str, Any],
     orchestrator: RecoveryOrchestrator = Depends(get_orchestrator),
     db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """
     Simulate a payment failure and run the full recovery pipeline.
@@ -155,12 +166,15 @@ async def simulate_payment_failure(
         )
 
     simulation_outcomes = body.get("simulation_outcomes")
+    provider = _simulator_decision_provider(str(body.get("decision_mode", "deterministic")), settings)
 
-    result = orchestrator.process_event(
+    result = await asyncio.to_thread(
+        orchestrator.process_event,
         event=event,
         merchant_policy=merchant_policy,
         simulation_outcomes=simulation_outcomes,
         simulate=True,
+        decision_provider=provider,
     )
 
     return result
@@ -190,6 +204,8 @@ async def run_demo_scenario(
     scenario_id: str,
     orchestrator: RecoveryOrchestrator = Depends(get_orchestrator),
     db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    decision_mode: str = Query("deterministic"),
 ) -> dict[str, Any]:
     """Run a canned demo scenario end-to-end."""
     from app.evaluation.generator import ScenarioGenerator
@@ -206,8 +222,6 @@ async def run_demo_scenario(
     elif scenario_id.lower() in named:
         scenario = named[scenario_id.lower()]
     else:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not supported via this endpoint")
 
     # Populate memory
@@ -230,10 +244,12 @@ async def run_demo_scenario(
         source="simulator",
     )
 
-    result = orchestrator.process_event(
+    result = await asyncio.to_thread(
+        orchestrator.process_event,
         event=event,
         simulation_outcomes=scenario.action_outcomes,
         simulate=True,
+        decision_provider=_simulator_decision_provider(decision_mode, settings),
     )
 
     return {
@@ -255,9 +271,11 @@ async def run_scenario_requested_shape(
     scenario_id: str,
     orchestrator: RecoveryOrchestrator = Depends(get_orchestrator),
     db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    decision_mode: str = Query("deterministic"),
 ) -> dict[str, Any]:
     """Requested public route; delegates to the single simulator implementation."""
-    return await run_demo_scenario(scenario_id, orchestrator, db)
+    return await run_demo_scenario(scenario_id, orchestrator, db, settings, decision_mode)
 
 
 @router.get("/scenarios/curated")

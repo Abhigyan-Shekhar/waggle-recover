@@ -1,7 +1,6 @@
 """Configuration for Waggle Recover backend."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,11 +34,15 @@ class Settings(BaseSettings):
     razorpay_enabled: bool = False
 
     # Decision engine
-    decision_provider: str = "deterministic"  # deterministic / llm
+    decision_provider: str = "deterministic"  # deterministic / llm / agent
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    groq_api_key: str = ""
+    groq_model: str = ""
+    agent_temperature: float = 0.0
+    agent_timeout_seconds: float = 15.0
 
     # Recovery thresholds
     lookup_first_confidence_threshold: float = 0.75

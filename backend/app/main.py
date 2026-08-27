@@ -41,7 +41,7 @@ def _initialize(settings: Settings) -> None:
     _adapter = WaggleRecoveryMemoryAdapter(tenant_graph)
     _db = Database(str(settings.app_db_abs_path))
 
-    decision_provider = create_decision_provider(settings.decision_provider)
+    decision_provider = create_decision_provider(settings.decision_provider, settings=settings)
     _orchestrator = RecoveryOrchestrator(
         adapter=_adapter,
         db=_db,
