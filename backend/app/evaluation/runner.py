@@ -300,7 +300,7 @@ def _eval_system_c(
 ) -> None:
     event = NormalizedPaymentEvent(
         event_type="payment.failed",
-        payment_id=f"eval_{scenario.id}_current",
+        payment_id=scenario.current_payment_id or f"eval_{scenario.id}_current",
         customer_id=scenario.customer_id,
         merchant_id=scenario.merchant_id,
         amount=scenario.amount,

@@ -86,6 +86,19 @@ class TestScenarioGenerator:
             len([event for event in scenario.history if event.action_taken == "SUGGEST_METHOD"]) >= 2
             for scenario in failed_alternatives
         )
+        assert all(
+            scenario.current_payment_id
+            and {event.payment_id for event in scenario.history} == {scenario.current_payment_id}
+            for scenario in failed_alternatives
+        )
+
+        retry_exhaustion = [scenario for scenario in scenarios if scenario.category == "retry_limit_exhaustion"]
+        assert retry_exhaustion
+        assert all(
+            scenario.current_payment_id
+            and {event.payment_id for event in scenario.history} == {scenario.current_payment_id}
+            for scenario in retry_exhaustion
+        )
 
 
 class TestBaselineA:

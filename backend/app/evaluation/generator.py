@@ -64,6 +64,7 @@ class EvalScenario:
     instruments: list[dict[str, Any]] = field(default_factory=list)
 
     seed: int = 42
+    current_payment_id: str | None = None
 
 
 # ── Category constants ─────────────────────────────────────────────────────
@@ -689,6 +690,7 @@ class ScenarioGenerator:
         )
 
     def _gen_retry_exhaustion(self, sid, customer_id, merchant_id, amount, method, instrument_alias) -> EvalScenario:
+        payment_id = f"pay_retry_{sid}"
         return EvalScenario(
             id=sid, name="Retry exhaustion", category="retry_limit_exhaustion",
             customer_id=customer_id, merchant_id=merchant_id,
@@ -696,7 +698,7 @@ class ScenarioGenerator:
             failure_code="issuer_unavailable", failure_reason="Issuer unavailable",
             history=[
                 ScenarioHistory(
-                    event_type="failure", payment_id=f"pay_h_{sid}_{i}",
+                    event_type="failure", payment_id=payment_id,
                     customer_id=customer_id, merchant_id=merchant_id,
                     amount=amount, method=method, instrument_id=instrument_alias,
                     failure_code="issuer_unavailable", outcome="FAILURE",
@@ -708,6 +710,7 @@ class ScenarioGenerator:
             ground_truth_actions=["STOP"],
             has_useful_memory=True,
             instruments=[{"alias": instrument_alias, "type": method, "status": "active"}],
+            current_payment_id=payment_id,
         )
 
     def _gen_successful_alternative(self, sid, customer_id, merchant_id, amount, method, instrument_alias) -> EvalScenario:
@@ -737,6 +740,7 @@ class ScenarioGenerator:
     def _gen_failed_alternative(self, sid, customer_id, merchant_id, amount, method, instrument_alias) -> EvalScenario:
         alt_method = self.rng.choice([candidate for candidate in METHODS if candidate != method])
         alt_instrument = self.rng.choice(INSTRUMENTS[alt_method])
+        payment_id = f"pay_failed_alternative_{sid}"
         return EvalScenario(
             id=sid, name="Failed alternative", category="failed_alternative",
             customer_id=customer_id, merchant_id=merchant_id,
@@ -744,7 +748,7 @@ class ScenarioGenerator:
             failure_code="issuer_unavailable", failure_reason="Issuer unavailable",
             history=[
                 ScenarioHistory(
-                    event_type="failure", payment_id=f"pay_h_{sid}_alt_{i}",
+                    event_type="failure", payment_id=payment_id,
                     customer_id=customer_id, merchant_id=merchant_id,
                     amount=amount, method=alt_method, instrument_id=alt_instrument,
                     failure_code="issuer_unavailable", outcome="FAILURE",
@@ -759,4 +763,5 @@ class ScenarioGenerator:
                 {"alias": instrument_alias, "type": method, "status": "active"},
                 {"alias": alt_instrument, "type": alt_method, "status": "active"},
             ],
+            current_payment_id=payment_id,
         )
