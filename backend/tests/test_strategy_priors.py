@@ -12,6 +12,7 @@ from app.config import Settings
 from app.domain.enums import FailureClass, OutcomeStatus, RecoveryAction
 from app.domain.models import (
     EvidenceBundle,
+    EvidenceReference,
     MerchantPolicy,
     PaymentFailure,
     PaymentInstrument,
@@ -249,6 +250,52 @@ def test_adaptive_ranking_changes_only_safe_ambiguous_decision():
         adaptive.retry_after_seconds,
         adaptive.reason,
     )
+
+
+def test_exact_authoritative_timing_beats_aggregate_strategy_prior():
+    current = bundle()
+    current.accepted_evidence = [
+        EvidenceReference(
+            waggle_node_id="exact-timing-evidence",
+            label="Exact successful 600 second retry",
+            memory_type="recovery_outcome",
+            metadata={
+                "outcome": "SUCCESS",
+                "retry_after_seconds": 600,
+                "retry_timing_scope_match": True,
+            },
+        )
+    ]
+    current.strategy_priors = [
+        StrategyPriorEstimate(
+            action=RecoveryAction.SUGGEST_METHOD,
+            recommended_method="upi",
+            posterior_success_probability=0.95,
+            global_prior=0.5,
+            weighted_successes=19,
+            weighted_failures=1,
+            effective_n=20,
+            insufficient_history=False,
+            selected_bucket="merchant_failure_class_strategy",
+        ),
+        StrategyPriorEstimate(
+            action=RecoveryAction.RETRY_AFTER,
+            recommended_method="card",
+            posterior_success_probability=0.55,
+            global_prior=0.5,
+            weighted_successes=10,
+            weighted_failures=10,
+            effective_n=20,
+            insufficient_history=False,
+            selected_bucket="merchant_failure_class_strategy",
+        ),
+    ]
+
+    decision = DeterministicDecisionProvider().decide(current)
+
+    assert decision.action == RecoveryAction.RETRY_AFTER
+    assert decision.retry_after_seconds == 600
+    assert decision.evidence_references[0].waggle_node_id == "exact-timing-evidence"
 
 
 def test_high_retry_prior_cannot_override_permanent_failure():

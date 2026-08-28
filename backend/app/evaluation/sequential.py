@@ -174,6 +174,16 @@ def run_sequential_evaluation(
             "merchant_count": merchant_count,
             "cases_per_merchant": cases_per_merchant,
             "phases": PHASES,
+            "controlled_exploration_per_10": [
+                RecoveryAction.RETRY_AFTER.value,
+                RecoveryAction.SUGGEST_METHOD.value,
+                RecoveryAction.CUSTOMER_NUDGE.value,
+                RecoveryAction.RETRY_AFTER.value,
+                RecoveryAction.SUGGEST_METHOD.value,
+                RecoveryAction.CUSTOMER_NUDGE.value,
+            ],
+            "decision_opportunities_per_10": 4,
+            "overall_optimal_rate_includes_forced_exploration": True,
             "kappa": active_settings.strategy_prior_kappa,
             "min_effective_n": active_settings.strategy_min_effective_n,
             "half_life_days": active_settings.evidence_recency_half_life_days,
@@ -258,6 +268,7 @@ def _run_condition(
                     "recovered_amount": result["outcome"]["recovered_amount"],
                     "optimal_viable_action": optimal.value,
                     "optimal_viable_action_selected": action == optimal,
+                    "decision_opportunity": len(viable) > 1,
                     "regret_rupees": round(regret_rupees, 2),
                     "max_effective_n_before_decision": prior_n,
                     "attempt_count_for_current_failure": result["metrics"]["attempt_count_for_current_failure"],
@@ -304,12 +315,18 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     at_risk = sum(row["amount"] for row in rows)
     recovered = sum(row["recovered_amount"] for row in rows)
     optimal = sum(row["optimal_viable_action_selected"] for row in rows)
+    opportunity_rows = [row for row in rows if row["decision_opportunity"]]
+    opportunity_optimal = sum(row["optimal_viable_action_selected"] for row in opportunity_rows)
     return {
         "case_count": count,
         "success_rate": round(successes / count, 6) if count else 0.0,
         "recovered_gmv_rupees": round(recovered / 100, 2),
         "gmv_recovery_rate": round(recovered / at_risk, 6) if at_risk else 0.0,
         "optimal_viable_action_rate": round(optimal / count, 6) if count else 0.0,
+        "decision_opportunity_count": len(opportunity_rows),
+        "optimal_action_rate_on_decision_opportunities": (
+            round(opportunity_optimal / len(opportunity_rows), 6) if opportunity_rows else 0.0
+        ),
         "cumulative_regret_rupees": round(sum(row["regret_rupees"] for row in rows), 2),
     }
 
@@ -329,6 +346,7 @@ def _aggregate_condition(seed_results: list[dict[str, Any]], condition: str) -> 
             "recovered_gmv_rupees",
             "gmv_recovery_rate",
             "optimal_viable_action_rate",
+            "optimal_action_rate_on_decision_opportunities",
             "cumulative_regret_rupees",
         ):
             values = [float(summary[metric]) for summary in summaries]

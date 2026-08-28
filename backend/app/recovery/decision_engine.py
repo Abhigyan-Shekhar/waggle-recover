@@ -72,10 +72,6 @@ class DeterministicDecisionProvider(DecisionProvider):
                 discarded_evidence=bundle.discarded_evidence,
             )
 
-        adaptive = self._adaptive_strategy_decision(bundle)
-        if adaptive is not None:
-            return adaptive
-
         # Strategy 1: Check if we have good timing evidence (same customer + transient + success)
         timing_evidence = self._find_timing_evidence(bundle)
         if timing_evidence is not None:
@@ -94,6 +90,13 @@ class DeterministicDecisionProvider(DecisionProvider):
                 evidence_references=evidence_refs,
                 discarded_evidence=bundle.discarded_evidence,
             )
+
+        # Aggregate merchant strategy priors are a generic safe tie-breaker.
+        # They must not override exact authoritative timing evidence for this
+        # customer + merchant + instrument + failure scope.
+        adaptive = self._adaptive_strategy_decision(bundle)
+        if adaptive is not None:
+            return adaptive
 
         # Strategy 2: Permanent or instrument failure → suggest method
         if failure.failure_class in (FailureClass.PERMANENT, FailureClass.INSTRUMENT):
