@@ -95,6 +95,57 @@ class TestOrchestratorBasic:
 
 
 class TestPolicyEnforcement:
+    def test_independent_failures_do_not_share_retry_budget(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+        policy = MerchantPolicy(
+            merchant_id="MERCH-INDEPENDENT",
+            max_recovery_attempts=3,
+            allowed_actions=list(RecoveryAction),
+        )
+
+        for index in range(12):
+            result = orchestrator.process_event(
+                event=_make_event(
+                    payment_id=f"pay_independent_{index}",
+                    customer_id="CUST-INDEPENDENT",
+                    merchant_id=policy.merchant_id,
+                ),
+                merchant_policy=policy,
+                simulation_outcomes={"RETRY_AFTER": "FAILURE", "SUGGEST_METHOD": "FAILURE"},
+                simulate=True,
+            )
+            assert result["metrics"]["attempt_count_for_current_failure"] == 0
+            assert result["decision"]["policy_result"] != "BLOCK"
+
+        assert result["metrics"]["recent_customer_merchant_activity"] >= 11
+
+    def test_repeated_attempts_for_same_payment_reach_policy_stop(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+        policy = MerchantPolicy(
+            merchant_id="MERCH-REPEATED",
+            max_recovery_attempts=3,
+            allowed_actions=list(RecoveryAction),
+        )
+        event = _make_event(
+            payment_id="pay_repeated_failure",
+            customer_id="CUST-REPEATED",
+            merchant_id=policy.merchant_id,
+        )
+
+        results = [
+            orchestrator.process_event(
+                event=event,
+                merchant_policy=policy,
+                simulation_outcomes={"RETRY_AFTER": "FAILURE", "STOP": "SKIPPED"},
+                simulate=True,
+            )
+            for _ in range(4)
+        ]
+
+        assert [item["metrics"]["attempt_count_for_current_failure"] for item in results] == [0, 1, 2, 3]
+        assert results[-1]["decision"]["action"] == "STOP"
+        assert results[-1]["decision"]["policy_result"] == "BLOCK"
+
     def test_exceeding_max_attempts_stops(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup
         customer_id = "CUST-POLICY-001"

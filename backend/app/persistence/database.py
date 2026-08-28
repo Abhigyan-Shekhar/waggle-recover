@@ -295,7 +295,31 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    def get_recovery_count(self, customer_id: str, merchant_id: str, window_seconds: int = 3600) -> int:
+    def get_attempt_count_for_payment(
+        self,
+        external_payment_id: str,
+        customer_id: str,
+        merchant_id: str,
+    ) -> int:
+        """Count attempts correlated to one payment failure, across webhook retries."""
+        rows = self.execute(
+            """
+            SELECT COUNT(*) as cnt FROM recovery_attempts ra
+            JOIN payment_failures pf ON ra.failure_id = pf.id
+            WHERE pf.external_payment_id = ?
+              AND pf.customer_id = ? AND pf.merchant_id = ?
+            """,
+            (external_payment_id, customer_id, merchant_id),
+        )
+        return rows[0]["cnt"] if rows else 0
+
+    def get_recent_customer_merchant_activity(
+        self,
+        customer_id: str,
+        merchant_id: str,
+        window_seconds: int = 3600,
+    ) -> int:
+        """Return recent cross-payment activity for friction/rate-limit telemetry only."""
         rows = self.execute(
             """
             SELECT COUNT(*) as cnt FROM recovery_attempts ra

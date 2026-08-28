@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.domain.enums import PolicyResult, TemporalStatus
-from app.domain.models import EvidenceBundle, MerchantPolicy, RecoveryDecision
+from app.domain.models import EvidenceBundle, RecoveryDecision
 from app.recovery.policy import PolicyValidationResult
 
 
@@ -63,6 +63,18 @@ def build_explanation(
             lines.append(f"  {status_icon} [{ref.waggle_node_id[:8]}] {ref.label}")
             lines.append(f"      Status: {ref.temporal_status}")
             lines.append(f"      Reason: {ref.rejection_reason}")
+        lines.append("")
+
+    if bundle.strategy_priors:
+        lines.append("ADAPTIVE STRATEGY MEMORY (authoritative outcomes only)")
+        for prior in bundle.strategy_priors:
+            method = f" → {prior.recommended_method}" if prior.recommended_method else ""
+            readiness = "insufficient history" if prior.insufficient_history else "eligible for safe ranking"
+            lines.append(
+                f"  {prior.action}{method}: posterior={prior.posterior_success_probability:.1%}, "
+                f"effective_n={prior.effective_n:.1f} ({readiness})"
+            )
+        lines.append("  These priors rank viable actions only; PolicyEngine remains final authority.")
         lines.append("")
 
     # Policy checks

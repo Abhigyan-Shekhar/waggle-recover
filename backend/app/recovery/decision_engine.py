@@ -25,6 +25,7 @@ SAFE_TO_RETRY_CODES = {
 }
 
 DEFAULT_RETRY_SECONDS = 480  # 8 minutes fallback
+MATERIAL_PRIOR_GAP = 0.05
 
 
 class DecisionProvider(ABC):
@@ -53,8 +54,27 @@ class DeterministicDecisionProvider(DecisionProvider):
 
     mode = "deterministic"
 
+    def __init__(self, *, enable_strategy_priors: bool = True) -> None:
+        self.enable_strategy_priors = enable_strategy_priors
+
     def decide(self, bundle: EvidenceBundle) -> RecoveryDecision:
         failure = bundle.current_failure
+
+        # Friction is a hard constraint. No historical score may bypass it.
+        if bundle.retry_count >= 2:
+            return RecoveryDecision(
+                failure_id=failure.id,
+                action=RecoveryAction.STOP,
+                confidence=0.90,
+                reason=f"Multiple failed recovery attempts ({bundle.retry_count}). Stopping to prevent further friction.",
+                memory_contribution=bundle.memory_contribution,
+                evidence_references=bundle.accepted_evidence,
+                discarded_evidence=bundle.discarded_evidence,
+            )
+
+        adaptive = self._adaptive_strategy_decision(bundle)
+        if adaptive is not None:
+            return adaptive
 
         # Strategy 1: Check if we have good timing evidence (same customer + transient + success)
         timing_evidence = self._find_timing_evidence(bundle)
@@ -110,19 +130,7 @@ class DeterministicDecisionProvider(DecisionProvider):
                 discarded_evidence=bundle.discarded_evidence,
             )
 
-        # Strategy 4: Too many failed attempts → stop
-        if bundle.retry_count >= 2:
-            return RecoveryDecision(
-                failure_id=failure.id,
-                action=RecoveryAction.STOP,
-                confidence=0.90,
-                reason=f"Multiple failed recovery attempts ({bundle.retry_count}). Stopping to prevent further friction.",
-                memory_contribution=bundle.memory_contribution,
-                evidence_references=bundle.accepted_evidence,
-                discarded_evidence=bundle.discarded_evidence,
-            )
-
-        # Strategy 5: stale success history is a reason to choose a fresh method,
+        # Strategy 4: stale success history is a reason to choose a fresh method,
         # never to reuse the timing or route attached to the superseded instrument.
         if bundle.discarded_evidence:
             superseded = [
@@ -142,7 +150,7 @@ class DeterministicDecisionProvider(DecisionProvider):
                     discarded_evidence=bundle.discarded_evidence,
                 )
 
-        # Strategy 6: Transient failure with no timing evidence → safe RETRY_AFTER with default
+        # Strategy 5: Transient failure with no timing evidence → safe RETRY_AFTER with default
         if failure.failure_class == FailureClass.TRANSIENT:
             return RecoveryDecision(
                 failure_id=failure.id,
@@ -159,8 +167,55 @@ class DeterministicDecisionProvider(DecisionProvider):
                 discarded_evidence=bundle.discarded_evidence,
             )
 
-        # Strategy 7: No useful memory → safe fallback
+        # Strategy 6: No useful memory → safe fallback
         return self._safe_fallback(bundle)
+
+    def _adaptive_strategy_decision(self, bundle: EvidenceBundle) -> RecoveryDecision | None:
+        """Rank safe transient strategies only when merchant evidence is material."""
+        if not self.enable_strategy_priors or bundle.current_failure.failure_class != FailureClass.TRANSIENT:
+            return None
+        usable = [item for item in bundle.strategy_priors if not item.insufficient_history]
+        if not usable:
+            return None
+        ranked = sorted(usable, key=lambda item: (-item.posterior_success_probability, item.action.value))
+        top = ranked[0]
+        second_probability = ranked[1].posterior_success_probability if len(ranked) > 1 else top.global_prior
+        if top.posterior_success_probability - second_probability < MATERIAL_PRIOR_GAP:
+            return None
+
+        failure = bundle.current_failure
+        common = {
+            "failure_id": failure.id,
+            "confidence": min(0.9, max(0.5, top.posterior_success_probability)),
+            "memory_contribution": bundle.memory_contribution,
+            "evidence_references": bundle.accepted_evidence,
+            "discarded_evidence": bundle.discarded_evidence,
+        }
+        reason = (
+            f"Adaptive Strategy Memory preferred {top.action.value} because authoritative merchant outcomes give "
+            f"posterior recovery probability {top.posterior_success_probability:.2f} versus "
+            f"{second_probability:.2f} for the next safe strategy (effective_n={top.effective_n:.1f})."
+        )
+        if top.action == RecoveryAction.RETRY_AFTER:
+            timing = self._find_timing_evidence(bundle)
+            retry_seconds = timing[0] if timing else DEFAULT_RETRY_SECONDS
+            return RecoveryDecision(
+                action=top.action,
+                retry_after_seconds=retry_seconds,
+                recommended_method=failure.method,
+                reason=reason,
+                **common,
+            )
+        if top.action == RecoveryAction.SUGGEST_METHOD:
+            return RecoveryDecision(
+                action=top.action,
+                recommended_method=top.recommended_method or self._find_alternative_method(bundle) or "upi",
+                reason=reason,
+                **common,
+            )
+        if top.action == RecoveryAction.CUSTOMER_NUDGE:
+            return RecoveryDecision(action=top.action, reason=reason, **common)
+        return None
 
     def _find_timing_evidence(
         self, bundle: EvidenceBundle
@@ -441,4 +496,4 @@ def create_decision_provider(provider: str = "deterministic", *, settings: Any |
             kwargs.setdefault("temperature", settings.agent_temperature)
             kwargs.setdefault("timeout_seconds", settings.agent_timeout_seconds)
         return AgentDecisionProvider(**kwargs)
-    return DeterministicDecisionProvider()
+    return DeterministicDecisionProvider(**kwargs)

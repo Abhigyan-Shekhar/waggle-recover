@@ -437,6 +437,9 @@ class AgentDecisionProvider(DecisionProvider):
                 "mode": bundle.retrieval_mode.value,
                 "memory_contribution": bundle.memory_contribution.value,
             },
+            "authoritative_strategy_priors": [
+                item.model_dump(mode="json") for item in bundle.strategy_priors
+            ],
         }
 
     @staticmethod
@@ -466,6 +469,8 @@ class AgentDecisionProvider(DecisionProvider):
             "override their stale/superseded status. You produce a candidate action only; you never execute payments. "
             "When supersession rejects the retrieved success/timing memory and no trusted timing evidence remains, "
             "prefer SUGGEST_METHOD using safe_alternative_methods over retrying the same failed method. "
+            "authoritative_strategy_priors are advisory rankings over safe strategies only; never use them to "
+            "override merchant policy, retry limits, or permanent-failure constraints. "
             "Set retry_after_seconds to null unless action is RETRY_AFTER, and set recommended_method to null unless "
             "the selected action uses a payment method. "
             "Return one JSON object with exactly these fields: action, retry_after_seconds, recommended_method, "
@@ -482,6 +487,9 @@ class AgentDecisionProvider(DecisionProvider):
             "memory_contribution": bundle.memory_contribution.value,
             "accepted_evidence_ids": [ref.waggle_node_id for ref in bundle.accepted_evidence],
             "rejected_evidence_ids": [ref.waggle_node_id for ref in bundle.discarded_evidence],
+            "authoritative_strategy_priors": [
+                item.model_dump(mode="json") for item in bundle.strategy_priors
+            ],
             "agent_fallback": False,
             "model_latency_ms": 0.0,
             "stages": [],

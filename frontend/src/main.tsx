@@ -30,6 +30,16 @@ type AgentTrace = {
   model_latency_ms: number;
   stages: AgentStage[];
 };
+type StrategyPrior = {
+  action: string;
+  recommended_method?: string | null;
+  posterior_success_probability: number;
+  global_prior: number;
+  effective_n: number;
+  insufficient_history: boolean;
+  selected_bucket: string;
+  authoritative_evidence_ids: string[];
+};
 
 const money = (paise = 0) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(paise / 100);
 const actionSummary = (action?: string | null, retry?: number | null, method?: string | null) =>
@@ -38,13 +48,14 @@ const actionSummary = (action?: string | null, retry?: number | null, method?: s
 function GraphView({ graph }: { graph: MemoryGraph | null }) {
   if (!graph?.nodes.length) return <div className="graph-empty"><strong>No graph selected</strong><span>Select a completed recovery to reveal the Waggle memory trail.</span></div>;
 
-  const rootId = graph.root_id ?? graph.nodes.find(node => node.tags?.includes("recovery_decision"))?.id;
+  const uniqueNodes = Array.from(new Map(graph.nodes.map(node => [node.id, node])).values());
+  const rootId = graph.root_id ?? uniqueNodes.find(node => node.tags?.includes("recovery_decision"))?.id;
   const relation = (name: string) => graph.edges.find(edge => edge.metadata?.relation === name);
   const currentFailureId = relation("decision_for_failure")?.target_id;
   const currentOutcomeId = relation("outcome_of_decision")?.source_id;
   const rejectedIds = new Set(graph.edges.filter(edge => edge.metadata?.validation_status === "rejected").map(edge => edge.target_id));
   const acceptedIds = new Set(graph.edges.filter(edge => edge.metadata?.validation_status === "accepted").map(edge => edge.target_id));
-  const currentInstrument = String(graph.nodes.find(node => node.id === currentFailureId)?.metadata?.instrument_id ?? "");
+  const currentInstrument = String(uniqueNodes.find(node => node.id === currentFailureId)?.metadata?.instrument_id ?? "");
 
   const roleFor = (node: GraphNode) => {
     if (node.id === rootId) return "decision";
@@ -59,7 +70,7 @@ function GraphView({ graph }: { graph: MemoryGraph | null }) {
     return "memory";
   };
 
-  const rejectedNodes = graph.nodes
+  const rejectedNodes = uniqueNodes
     .filter(node => roleFor(node) === "rejected")
     .sort((a, b) => Number(a.metadata?.retry_after_seconds === 480) - Number(b.metadata?.retry_after_seconds === 480))
     .reverse()
@@ -67,9 +78,9 @@ function GraphView({ graph }: { graph: MemoryGraph | null }) {
   const essentialIds = new Set([
     rootId, currentFailureId, currentOutcomeId,
     ...rejectedNodes.map(node => node.id),
-    ...graph.nodes.filter(node => ["superseded", "current-instrument"].includes(roleFor(node))).map(node => node.id),
+    ...uniqueNodes.filter(node => ["superseded", "current-instrument"].includes(roleFor(node))).map(node => node.id),
   ].filter(Boolean));
-  const nodes = graph.nodes.filter(node => essentialIds.has(node.id)).slice(0, 7);
+  const nodes = uniqueNodes.filter(node => essentialIds.has(node.id)).slice(0, 7);
   const roleCounts: Record<string, number> = {};
   const compact = window.innerWidth < 850;
   const slots: Record<string, Array<{ x: number; y: number }>> = compact ? {
@@ -131,7 +142,7 @@ function GraphView({ graph }: { graph: MemoryGraph | null }) {
   };
 
   return <div className="graph-wrap">
-    <div className="graph-stats"><span><b>{graph.nodes.length}</b> connected nodes</span><span className="rejected-stat"><b>{rejectedIds.size}</b> memories rejected as stale</span><span><b>1</b> explainable decision</span></div>
+    <div className="graph-stats"><span><b>{uniqueNodes.length}</b> connected nodes</span><span className="rejected-stat"><b>{rejectedIds.size}</b> memories rejected as stale</span><span><b>1</b> explainable decision</span></div>
     <svg viewBox={compact ? "0 0 380 625" : "0 0 820 440"} role="img" aria-label="Waggle decision memory graph">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
       {edges.map((edge, index) => {
@@ -169,6 +180,7 @@ function App() {
   const [message, setMessage] = useState("Connect the simulator to see live decisions.");
   const [decisionMode, setDecisionMode] = useState<DecisionMode>("deterministic");
   const [agentTrace, setAgentTrace] = useState<AgentTrace | null>(null);
+  const [strategyPriors, setStrategyPriors] = useState<StrategyPrior[]>([]);
   const [evaluationRunning, setEvaluationRunning] = useState(false);
   const evaluationRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<HTMLElement | null>(null);
@@ -196,10 +208,12 @@ function App() {
 
   const runScenario = async (id: string) => {
     setAgentTrace(null);
+    setStrategyPriors([]);
     setMessage(decisionMode === "agent" ? "Waggle is validating memory before Qwen reasons…" : "Running deterministic scenario…");
     const response = await fetch(`${API}/api/simulator/scenario/${id}/run?decision_mode=${decisionMode}`, { method: "POST" });
     const body = await response.json();
     if (body.result?.agent_trace) setAgentTrace(body.result.agent_trace);
+    setStrategyPriors(body.result?.strategy_priors ?? []);
     const fallback = body.result?.agent_trace?.agent_fallback;
     setMessage(response.ok ? `${body.scenario.name}: ${body.result.decision.action}${fallback ? " · AI unavailable, safe deterministic fallback used" : decisionMode === "agent" ? " · Qwen candidate passed through Policy Guard" : ""}` : body.detail ?? "Scenario failed");
     const latestRecoveries = await refresh();
@@ -272,9 +286,10 @@ function App() {
       </> : <p>Select a recovery in the feed to see the evidence audit trail.</p>}</article>
     </section>
     {agentTrace && <section className={`panel agent-trace ${agentTrace.agent_fallback ? "fallback-trace" : ""}`}><div className="trace-heading"><div><p className="eyebrow">Constrained AI, auditable by design</p><h2>AI Agent Trace</h2></div><div className="model-chip"><span>Groq · {agentTrace.model}</span><small>{agentTrace.model_latency_ms} ms</small></div></div>{agentTrace.agent_fallback && <div className="fallback-banner"><strong>SAFE FALLBACK USED</strong><span>{agentTrace.fallback_reason}</span></div>}<div className="trace-stages">{agentTrace.stages.map((stage, index) => <article key={`${stage.key}-${index}`} className={`trace-stage ${stage.status}`}><span className="stage-index">{index + 1}</span><div><strong>{stage.label}</strong><p>{stage.detail}</p></div></article>)}</div><div className="trace-result"><div><span>Candidate Action</span><strong>{actionSummary(agentTrace.candidate_action, agentTrace.candidate_retry_after_seconds, agentTrace.candidate_recommended_method)}</strong><small>{agentTrace.candidate_reason}</small></div><i>→</i><div><span>Policy Guard</span><strong>{agentTrace.policy_result ?? "—"}</strong><small>Deterministic merchant constraints</small></div><i>→</i><div><span>Final Action</span><strong>{actionSummary(agentTrace.final_action, agentTrace.final_retry_after_seconds, agentTrace.final_recommended_method)}</strong><small>The LLM never executes money movement.</small></div></div></section>}
+    {strategyPriors.length > 0 && <section className="panel strategy-memory"><div className="strategy-heading"><div><p className="eyebrow">Waggle learns online</p><h2>Adaptive Strategy Memory</h2></div><span className="authority-chip">Policy Guard stays final</span></div><p className="muted">Recency-weighted Bayesian estimates from authoritative recovery outcomes. Stale or superseded evidence contributes zero.</p><div className="strategy-grid">{strategyPriors.slice(0, 3).map(prior => <article key={`${prior.action}-${prior.recommended_method ?? ""}`}><div><strong>{actionSummary(prior.action, null, prior.recommended_method)}</strong><span className={prior.insufficient_history ? "prior-warming" : "prior-ready"}>{prior.insufficient_history ? "warming up" : "eligible"}</span></div><b>{Math.round(prior.posterior_success_probability * 100)}%</b><small>posterior · effective n={prior.effective_n.toFixed(1)} · global {Math.round(prior.global_prior * 100)}%</small><small>{prior.authoritative_evidence_ids.length} authoritative outcome{prior.authoritative_evidence_ids.length === 1 ? "" : "s"}</small></article>)}</div></section>}
     <section className="panel graph-panel" ref={graphRef}><div className="graph-intro"><div><p className="eyebrow">This is Waggle</p><h2>Decision Memory Graph</h2></div><p>Waggle turns payment events into <strong>connected, temporal memory</strong>. For every decision it shows what happened, which history was retrieved, what became stale, and why the final action was chosen.</p></div><GraphView graph={graph} /></section>
     <section className="panel evaluation-panel" ref={evaluationRef}><div className="evaluation-heading"><div><p className="eyebrow">Proof at scale · no model calls</p><h2>Deterministic Policy Evaluation</h2></div>{evaluation && <span className="run-badge">{evaluation.scenario_count} seeded cases</span>}</div>{evaluation ? <><div className="evaluation-proof"><div><strong>{evaluation.systems.system_c.action_accuracy_pct}%</strong><span>parameter-aware action accuracy</span></div><div><strong>{evaluation.systems.system_c.stale_rejection_rate_pct}%</strong><span>exact stale-evidence rejection</span></div></div><p className="muted">Same 200 seeded cases, same outcome model, zero Groq calls. Only System C validates whether remembered evidence is still current.</p><div className="table-frame"><table><thead><tr><th>System</th><th>Action accuracy</th><th>Success rate</th><th>GMV recovery</th><th>Stale rejection</th><th>Avg latency</th></tr></thead><tbody>{systems.map(system => <tr key={system.name} className={system === evaluation.systems.system_c ? "system-c" : ""}><td>{system.name}</td><td>{system.action_accuracy_pct}%</td><td>{system.success_rate_pct}%</td><td>{system.recovery_rate_gmv_pct}%</td><td>{system.stale_rejection_rate_pct}%</td><td>{system.avg_latency_ms} ms</td></tr>)}</tbody></table></div></> : <p className="muted">Run the reproducible benchmark to compare blind retry, history-only recovery, and supersession-aware Waggle Recover.</p>}</section>
-    <section className="panel"><h2>Live recovery feed</h2><table><thead><tr><th>Customer</th><th>Amount</th><th>Method / failure</th><th>Decision</th><th>Outcome</th><th></th></tr></thead><tbody>{recoveries.map(row => <tr key={row.id}><td>{row.customer_id}</td><td>{money(row.amount)}</td><td>{row.method} · {row.failure_code}</td><td>{row.action ?? "—"}</td><td>{row.outcome ?? "—"} {row.recovered_amount ? money(row.recovered_amount) : ""}</td><td><button className="why" onClick={() => void inspectRecovery(row, true)}>Show graph</button></td></tr>)}{!recoveries.length && <tr><td colSpan={6}>No recoveries yet. Run a scenario to populate the feed.</td></tr>}</tbody></table></section>
+    <section className="panel"><h2>Live recovery feed</h2><table><thead><tr><th>Customer</th><th>Amount</th><th>Method / failure</th><th>Decision</th><th>Outcome</th><th></th></tr></thead><tbody>{recoveries.map((row, index) => <tr key={`${row.id}-${row.action ?? "pending"}-${row.outcome ?? "pending"}-${index}`}><td>{row.customer_id}</td><td>{money(row.amount)}</td><td>{row.method} · {row.failure_code}</td><td>{row.action ?? "—"}</td><td>{row.outcome ?? "—"} {row.recovered_amount ? money(row.recovered_amount) : ""}</td><td><button className="why" onClick={() => void inspectRecovery(row, true)}>Show graph</button></td></tr>)}{!recoveries.length && <tr><td colSpan={6}>No recoveries yet. Run a scenario to populate the feed.</td></tr>}</tbody></table></section>
   </main>;
 }
 

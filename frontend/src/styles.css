@@ -590,6 +590,67 @@ th {
 .graph-wrap marker path {
   fill: #8499bc;
 }
+.strategy-memory {
+  border-color: #347d71;
+  background: linear-gradient(145deg, #121e33, #102722);
+}
+.strategy-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.strategy-heading h2 {
+  margin-top: 3px;
+}
+.authority-chip,
+.prior-ready,
+.prior-warming {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.authority-chip,
+.prior-ready {
+  color: #aef1dc;
+  background: #194c42;
+}
+.prior-warming {
+  color: #ffd0a3;
+  background: #51361f;
+}
+.strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 18px;
+}
+.strategy-grid article {
+  border: 1px solid #345d59;
+  border-radius: 13px;
+  padding: 15px;
+  background: rgba(12, 25, 42, 0.72);
+}
+.strategy-grid article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.strategy-grid article > b {
+  display: block;
+  color: #8ee3c9;
+  font-size: 2rem;
+  margin: 13px 0 5px;
+}
+.strategy-grid small {
+  display: block;
+  color: #aebbd3;
+  margin-top: 4px;
+}
 .graph-node rect {
   fill: #182641;
   stroke: #6681a8;
@@ -698,6 +759,16 @@ th {
     grid-template-columns: 1fr;
   }
   .evaluation-proof {
+    grid-template-columns: 1fr;
+  }
+  .strategy-heading {
+    display: block;
+  }
+  .authority-chip {
+    display: inline-block;
+    margin-top: 10px;
+  }
+  .strategy-grid {
     grid-template-columns: 1fr;
   }
   .trace-heading,

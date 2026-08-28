@@ -37,6 +37,7 @@ from app.recovery.decision_engine import DecisionProvider, DeterministicDecision
 from app.recovery.executor import RecoveryExecutor
 from app.recovery.explanation import build_explanation, build_structured_audit
 from app.recovery.policy import PolicyEngine
+from app.recovery.strategy_priors import get_strategy_priors
 
 LOGGER = logging.getLogger(__name__)
 
@@ -110,8 +111,18 @@ class RecoveryOrchestrator:
         # 1. Build failure domain model
         failure = self._build_failure(event)
 
-        # 2. Get retry count for this customer+merchant
-        retry_count = self.db.get_recovery_count(failure.customer_id, failure.merchant_id)
+        # 2. Policy attempts are scoped to this payment failure. Recent
+        # customer+merchant activity is separate telemetry and must never make
+        # independent payments consume one another's retry budget.
+        retry_count = self.db.get_attempt_count_for_payment(
+            failure.external_payment_id,
+            failure.customer_id,
+            failure.merchant_id,
+        )
+        recent_customer_merchant_activity = self.db.get_recent_customer_merchant_activity(
+            failure.customer_id,
+            failure.merchant_id,
+        )
 
         # 3. Get merchant policy
         policy = merchant_policy or self._load_merchant_policy(failure.merchant_id)
@@ -127,6 +138,7 @@ class RecoveryOrchestrator:
             current_instruments=instruments,
             retry_count=retry_count,
         )
+        bundle.strategy_priors = get_strategy_priors(bundle, self.adapter, self.settings)
 
         # 6. Store current failure after retrieval so it can still anchor the
         # decision/outcome graph without contaminating historical evidence.
@@ -140,6 +152,7 @@ class RecoveryOrchestrator:
         decision_start = time.time()
         active_provider = decision_provider or self.decision_provider
         candidate, decision_trace = active_provider.decide_with_trace(bundle)
+        candidate.strategy_priors = bundle.strategy_priors
         decision_latency_ms = (time.time() - decision_start) * 1000
 
         # 8. Stage 2: Policy validation
@@ -233,6 +246,7 @@ class RecoveryOrchestrator:
 
         # 14. Build audit record
         audit = build_structured_audit(bundle, final_decision, policy_result)
+        audit["strategy_adaptation"] = self._strategy_adaptation_audit(bundle)
         if decision_trace.get("decision_mode") == "agent":
             audit["agent_trace"] = decision_trace
 
@@ -247,6 +261,7 @@ class RecoveryOrchestrator:
             "audit": audit,
             "decision_mode": decision_trace.get("decision_mode", "deterministic"),
             "agent_trace": decision_trace if decision_trace.get("decision_mode") == "agent" else None,
+            "strategy_priors": [item.model_dump(mode="json") for item in bundle.strategy_priors],
             "metrics": {
                 "total_latency_ms": round(total_latency_ms, 2),
                 "decision_latency_ms": round(decision_latency_ms, 2),
@@ -257,6 +272,8 @@ class RecoveryOrchestrator:
                 "discarded_instruments": self._evidence_instruments(bundle.discarded_evidence),
                 "retrieval_mode": bundle.retrieval_mode,
                 "memory_contribution": bundle.memory_contribution,
+                "attempt_count_for_current_failure": retry_count,
+                "recent_customer_merchant_activity": recent_customer_merchant_activity,
             },
         }
 
@@ -273,6 +290,22 @@ class RecoveryOrchestrator:
             if instrument:
                 instruments.add(str(instrument))
         return sorted(instruments)
+
+    @staticmethod
+    def _strategy_adaptation_audit(bundle) -> dict[str, Any]:
+        priors = bundle.strategy_priors
+        preferred = priors[0] if priors else None
+        return {
+            "label": "Online evidence-weighted strategy adaptation",
+            "priors": [item.model_dump(mode="json") for item in priors],
+            "preferred_safe_strategy": None if preferred is None else {
+                "action": preferred.action.value,
+                "recommended_method": preferred.recommended_method,
+                "posterior_success_probability": preferred.posterior_success_probability,
+                "insufficient_history": preferred.insufficient_history,
+            },
+            "merchant_history_insufficient": not priors or all(item.insufficient_history for item in priors),
+        }
 
     def _handle_captured(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
         """Handle payment.captured — close any open recovery attempts."""

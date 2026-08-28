@@ -18,6 +18,7 @@ from app.domain.models import (
     NormalizedPaymentEvent,
     PaymentFailure,
     PaymentInstrument,
+    StrategyPriorEstimate,
 )
 from app.evaluation.generator import ScenarioGenerator
 from app.evaluation.runner import _populate_memory
@@ -110,6 +111,19 @@ def evidence_bundle() -> EvidenceBundle:
 
 
 def test_agent_receives_only_accepted_evidence_as_usable_memory(evidence_bundle):
+    evidence_bundle.strategy_priors = [StrategyPriorEstimate(
+        action=RecoveryAction.RETRY_AFTER,
+        recommended_method="card",
+        posterior_success_probability=0.74,
+        global_prior=0.61,
+        weighted_successes=8.2,
+        weighted_failures=2.8,
+        effective_n=11.0,
+        insufficient_history=False,
+        selected_bucket="merchant_failure_code_method_strategy",
+        authoritative_evidence_ids=["accepted-1"],
+        excluded_stale_evidence_ids=["rejected-old-card"],
+    )]
     client = FakeModelClient(candidate(action="RETRY_AFTER", retry_after_seconds=480,
                                        recommended_method="card", evidence_ids=["accepted-1"]))
     decision, trace = AgentDecisionProvider(model="test-qwen", model_client=client).decide_with_trace(evidence_bundle)
@@ -121,10 +135,13 @@ def test_agent_receives_only_accepted_evidence_as_usable_memory(evidence_bundle)
     assert context["rejected_memory_for_transparency_only"][0]["usable_as_evidence"] is False
     assert context["safe_alternative_methods"][0] == "upi"
     assert "card" not in context["safe_alternative_methods"]
+    assert context["authoritative_strategy_priors"][0]["posterior_success_probability"] == 0.74
+    assert "rejected-old-card" not in context["authoritative_strategy_priors"][0]["authoritative_evidence_ids"]
     assert "never cite" in client.system_prompts[0].lower()
     assert "prefer suggest_method" in client.system_prompts[0].lower()
     assert decision.evidence_references[0].waggle_node_id == "accepted-1"
     assert trace["agent_fallback"] is False
+    assert trace["authoritative_strategy_priors"][0]["effective_n"] == 11.0
 
 
 def test_agent_cannot_cite_rejected_evidence(evidence_bundle):

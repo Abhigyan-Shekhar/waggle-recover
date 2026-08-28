@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     lookup_first_confidence_threshold: float = 0.75
     max_evidence_nodes: int = 20
     evidence_recency_half_life_days: float = 14.0
+    strategy_prior_kappa: float = 5.0  # Pre-registered; never tune against the sequential evaluation.
+    strategy_min_effective_n: float = 5.0
 
     # Evidence scoring weights
     weight_semantic: float = 0.20

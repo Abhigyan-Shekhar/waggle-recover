@@ -128,6 +128,22 @@ class EvidenceReference(BaseModel):
     score_components: dict[str, float] = Field(default_factory=dict)
 
 
+class StrategyPriorEstimate(BaseModel):
+    """Auditable Bayesian estimate for one currently viable recovery strategy."""
+
+    action: RecoveryAction
+    recommended_method: str | None = None
+    posterior_success_probability: float
+    global_prior: float
+    weighted_successes: float
+    weighted_failures: float
+    effective_n: float
+    insufficient_history: bool
+    selected_bucket: str
+    authoritative_evidence_ids: list[str] = Field(default_factory=list)
+    excluded_stale_evidence_ids: list[str] = Field(default_factory=list)
+
+
 class EvidenceBundle(BaseModel):
     current_failure: PaymentFailure
     accepted_evidence: list[EvidenceReference] = Field(default_factory=list)
@@ -138,6 +154,7 @@ class EvidenceBundle(BaseModel):
     memory_contribution: MemoryContribution = MemoryContribution.NONE
     current_instruments: list[PaymentInstrument] = Field(default_factory=list)
     retry_count: int = 0
+    strategy_priors: list[StrategyPriorEstimate] = Field(default_factory=list)
 
 
 class RecoveryDecision(BaseModel):
@@ -160,6 +177,7 @@ class RecoveryDecision(BaseModel):
     memory_contribution: MemoryContribution = MemoryContribution.NONE
     evidence_references: list[EvidenceReference] = Field(default_factory=list)
     discarded_evidence: list[EvidenceReference] = Field(default_factory=list)
+    strategy_priors: list[StrategyPriorEstimate] = Field(default_factory=list)
 
     # Human-readable explanation
     explanation: str = ""

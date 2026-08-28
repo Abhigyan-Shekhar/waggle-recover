@@ -146,6 +146,25 @@ class WaggleRecoveryMemoryAdapter:
             self._link_decision_evidence(node_id, reference, accepted=True)
         for reference in decision.discarded_evidence:
             self._link_decision_evidence(node_id, reference, accepted=False)
+        prior_evidence_ids = {
+            evidence_id
+            for prior in decision.strategy_priors
+            for evidence_id in prior.authoritative_evidence_ids
+        }
+        for evidence_id in prior_evidence_ids:
+            try:
+                self.graph.add_edge(
+                    source_id=node_id,
+                    target_id=evidence_id,
+                    relationship=RelationType.DEPENDS_ON,
+                    metadata={
+                        "relation": "strategy_prior_evidence",
+                        "validation_status": "accepted",
+                        "authoritative": True,
+                    },
+                )
+            except Exception as e:
+                LOGGER.debug("Could not link strategy-prior evidence %s: %s", evidence_id, e)
 
         LOGGER.debug("Stored decision %s as Waggle node %s", decision.id, node_id)
         return node_id

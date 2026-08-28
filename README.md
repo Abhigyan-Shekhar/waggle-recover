@@ -26,6 +26,8 @@ Temporal / supersession validation
       ↓
 Trusted evidence + explicitly rejected memory
       ↓
+Recency-weighted Bayesian strategy priors
+      ↓
 LangGraph + Groq/Qwen (AI Agent mode only)
       ↓
 Candidate recovery action
@@ -104,6 +106,25 @@ The **Deterministic Policy Evaluation** compares three transparent systems on fi
 3. Waggle Recover (graph memory, supersession validation, policy, and audit trail).
 
 Evaluation metrics are computed from simulator outcomes and persisted in SQLite; the dashboard never invents KPI values. The 200-case evaluation always constructs its own deterministic orchestrator, so `DECISION_PROVIDER=agent` never silently turns those benchmark numbers into Qwen results.
+
+### Online strategy adaptation
+
+Waggle also learns which **safe recovery strategy** works for each merchant and failure context. It computes recency-weighted Beta-Binomial estimates from authoritative `SUCCESS`/`FAILURE` recovery outcomes, using a fixed 14-day half-life, prior strength κ=5.0, and minimum effective sample size 5.0. Superseded or expired instrument outcomes contribute exactly zero. The estimates rank already-viable actions only; retry limits, permanent-failure rules, merchant constraints, and the deterministic `PolicyEngine` remain final authority.
+
+The dashboard exposes these estimates as **Adaptive Strategy Memory**, including posterior success probability, effective sample size, and evidence count. The same compact audit is available to Qwen as trusted context in AI Agent mode.
+
+A separate sealed sequential evaluator compares the original static deterministic policy with this adaptive ranking:
+
+```bash
+cd backend
+python -m app.evaluation.sequential
+```
+
+Its protocol is fixed in source before results are observed: seeds `11, 29, 47, 71, 101`; three independent merchant streams; 30 cases per merchant; cold/intermediate/warm phases of 10 cases; identical pre-generated potential outcomes for both conditions; and merchant memory reset between streams. It reports per-seed and mean/std success rate, recovered GMV, optimal viable-action rate, and cumulative viable-action regret. This is intentionally separate from the existing 200-case isolated-scenario benchmark, whose reset semantics are unchanged.
+
+The preregistered run supported H1 under its locked directional rule. Across seeds, static vs adaptive mean success was **47.56% vs 48.22%**, optimal viable-action selection was **73.33% vs 75.11%**, and cumulative viable-action regret was **₹49,971 vs ₹48,072**. The improvement appeared only in the warm phase; three of five seeds remained unchanged because the minimum-history and material-gap gates deliberately prevented weak evidence from changing the static decision. These synthetic results demonstrate bounded online adaptation, not production uplift or statistical significance.
+
+The unchanged 200-case benchmark at seed 42 produced **87% action accuracy**, **87.3% GMV recovery**, and **100% exact stale-evidence rejection** for Waggle Recover, compared with 76%/77.3%/0% for contextual history and 43%/48.2%/0% for blind retry.
 
 ## Safety boundaries
 

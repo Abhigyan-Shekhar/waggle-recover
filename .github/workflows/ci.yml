@@ -22,6 +22,7 @@ jobs:
           app/api/evaluation.py
           app/evaluation/generator.py
           app/evaluation/runner.py
+          app/evaluation/sequential.py
           app/memory/retrieval.py
           app/memory/supersession.py
           app/memory/waggle_adapter.py
@@ -29,8 +30,11 @@ jobs:
           app/recovery/decision_engine.py
           app/recovery/agent.py
           app/recovery/orchestrator.py
+          app/recovery/strategy_priors.py
           tests/test_agent.py
           tests/test_evaluation.py
+          tests/test_sequential_adaptation.py
+          tests/test_strategy_priors.py
           tests/test_reliability.py
       - run: python -m pytest -q
 
