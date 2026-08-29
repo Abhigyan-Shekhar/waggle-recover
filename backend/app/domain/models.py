@@ -182,6 +182,15 @@ class RecoveryDecision(BaseModel):
     # Human-readable explanation
     explanation: str = ""
 
+    # An escalation is a terminal safety state, not a payment action.  It is
+    # deliberately explicit so an operations team can audit exactly why the
+    # autonomous workflow stopped and what context must be reviewed.
+    human_review_required: bool = False
+    escalation_reason: str = ""
+    attempt_count: int = 0
+    max_automated_attempts: int = 0
+    last_safe_action: RecoveryAction | None = None
+
     # Waggle node id (populated after storing)
     waggle_node_id: str | None = None
 

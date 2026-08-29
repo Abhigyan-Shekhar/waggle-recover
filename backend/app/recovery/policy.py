@@ -77,7 +77,7 @@ class PolicyEngine:
         max_attempts_check = self._check_max_attempts(retry_count, policy)
         checks.append(max_attempts_check)
         if not max_attempts_check.passed:
-            block_reason = max_attempts_check.note
+            block_reason = f"Maximum recovery attempts ({policy.max_recovery_attempts}) reached"
             return PolicyValidationResult(
                 result=PolicyResult.BLOCK,
                 checks=checks,

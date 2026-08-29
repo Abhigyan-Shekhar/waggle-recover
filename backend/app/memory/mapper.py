@@ -40,13 +40,19 @@ def instrument_content(instr_data: dict[str, Any]) -> str:
 
 
 def decision_content(dec_data: dict[str, Any]) -> str:
-    return (
+    content = (
         f"Recovery decision for failure {dec_data.get('failure_id', '?')}: "
         f"action={dec_data.get('action', '?')}, "
         f"confidence={dec_data.get('confidence', 0):.2f}. "
         f"Reason: {dec_data.get('reason', 'N/A')}. "
         f"Memory contribution: {dec_data.get('memory_contribution', 'NONE')}."
     )
+    if dec_data.get("human_review_required"):
+        content += (
+            " Human review required: autonomous recovery was blocked by policy."
+            f" Reason: {dec_data.get('escalation_reason', 'No safe automated recovery remains')}."
+        )
+    return content
 
 
 def outcome_content(outcome_data: dict[str, Any]) -> str:
@@ -134,6 +140,9 @@ def decision_tags(dec_data: dict[str, Any]) -> list[str]:
     ]
     if dec_data.get("recommended_method"):
         tags.append(f"method:{dec_data['recommended_method']}")
+    if dec_data.get("human_review_required"):
+        tags.append("human_review_required")
+        tags.append("policy_blocked")
     return tags
 
 
@@ -200,6 +209,12 @@ def decision_metadata(dec_data: dict[str, Any]) -> dict[str, Any]:
         "memory_contribution": dec_data.get("memory_contribution", "NONE"),
         "retry_after_seconds": dec_data.get("retry_after_seconds"),
         "recommended_method": dec_data.get("recommended_method"),
+        "policy_result": dec_data.get("policy_result", "ALLOW"),
+        "human_review_required": dec_data.get("human_review_required", False),
+        "escalation_reason": dec_data.get("escalation_reason", ""),
+        "attempt_count": dec_data.get("attempt_count", 0),
+        "max_automated_attempts": dec_data.get("max_automated_attempts", 0),
+        "last_safe_action": dec_data.get("last_safe_action"),
     }
 
 

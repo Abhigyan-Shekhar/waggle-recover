@@ -95,6 +95,40 @@ class TestOrchestratorBasic:
 
 
 class TestPolicyEnforcement:
+    def test_curated_escalation_case_persists_handoff_and_graph_metadata(self, tmp_setup):
+        orchestrator, adapter, db = tmp_setup
+        from app.evaluation.generator import ScenarioGenerator
+        from app.evaluation.runner import _populate_memory
+
+        scenario = next(
+            item for item in ScenarioGenerator(seed=42)._curated_scenarios()
+            if item.name == "Escalation Required"
+        )
+        _populate_memory(adapter, db, orchestrator, scenario)
+        result = orchestrator.process_event(
+            event=_make_event(
+                payment_id=scenario.current_payment_id,
+                customer_id=scenario.customer_id,
+                merchant_id=scenario.merchant_id,
+                amount=scenario.amount,
+                instrument_id=scenario.instrument_id,
+                error_code=scenario.failure_code,
+                error_description=scenario.failure_reason,
+            ),
+            simulation_outcomes=scenario.action_outcomes,
+            simulate=True,
+        )
+
+        assert result["decision"]["action"] == "ESCALATE"
+        assert result["escalation"]["human_review_required"] is True
+        assert result["escalation"]["money_movement"] == "NONE"
+        assert result["outcome"]["outcome"] == "SKIPPED"
+
+        graph = adapter.get_nodes_and_edges_for_decision(result["decision_waggle_node"])
+        decision_node = next(node for node in graph["nodes"] if node["id"] == result["decision_waggle_node"])
+        assert decision_node["metadata"]["human_review_required"] is True
+        assert decision_node["metadata"]["policy_result"] == "BLOCK"
+
     def test_independent_failures_do_not_share_retry_budget(self, tmp_setup):
         orchestrator, _, _ = tmp_setup
         policy = MerchantPolicy(
@@ -119,7 +153,7 @@ class TestPolicyEnforcement:
 
         assert result["metrics"]["recent_customer_merchant_activity"] >= 11
 
-    def test_repeated_attempts_for_same_payment_reach_policy_stop(self, tmp_setup):
+    def test_repeated_attempts_for_same_payment_escalate_to_human_review(self, tmp_setup):
         orchestrator, _, _ = tmp_setup
         policy = MerchantPolicy(
             merchant_id="MERCH-REPEATED",
@@ -143,8 +177,24 @@ class TestPolicyEnforcement:
         ]
 
         assert [item["metrics"]["attempt_count_for_current_failure"] for item in results] == [0, 1, 2, 3]
-        assert results[-1]["decision"]["action"] == "STOP"
+        assert results[-1]["decision"]["action"] == "ESCALATE"
         assert results[-1]["decision"]["policy_result"] == "BLOCK"
+        assert results[-1]["decision"]["human_review_required"] is True
+        assert results[-1]["outcome"]["outcome"] == "SKIPPED"
+        assert results[-1]["outcome"]["recovered_amount"] == 0
+        escalation = results[-1]["escalation"]
+        assert escalation["action"] == "ESCALATE"
+        assert escalation["human_review_required"] is True
+        assert escalation["reason"] == "Maximum recovery attempts (3) reached"
+        assert escalation["merchant_id"] == policy.merchant_id
+        assert escalation["customer_id"] == "CUST-REPEATED"
+        assert escalation["failure_code"] == "issuer_unavailable"
+        assert escalation["attempt_count"] == escalation["max_automated_attempts"] == 3
+        assert escalation["last_safe_action"] == "RETRY_AFTER"
+        assert escalation["evidence_ids"]  # retrieved provenance is persisted for the reviewer
+        assert escalation["policy_result"] == "BLOCK"
+        assert escalation["money_movement"] == "NONE"
+        assert escalation["recommended_next_step"] == "Manual review / customer outreach"
 
     def test_exceeding_max_attempts_stops(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup

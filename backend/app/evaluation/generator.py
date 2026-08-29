@@ -156,7 +156,7 @@ class ScenarioGenerator:
         return scenarios[:count]
 
     def _curated_scenarios(self) -> list[EvalScenario]:
-        """The 5 curated + 1 mandate scenarios."""
+        """Curated product-proof scenarios, including explicit human escalation."""
         scenarios = []
 
         # Scenario 1 — Naive retry wastes attempts (bad retry prevention)
@@ -408,6 +408,42 @@ class ScenarioGenerator:
             ground_truth_actions=["RETRY_AFTER", "CUSTOMER_NUDGE", "SUGGEST_METHOD"],
             has_useful_memory=False,
             instruments=[{"alias": "card_7777", "type": "card", "status": "active"}],
+        ))
+
+        # Scenario 6 — Autonomous limit exhausted: stop money movement and
+        # create an auditable human-review handoff instead of a silent STOP.
+        escalation_payment_id = "pay_escalation_006"
+        scenarios.append(EvalScenario(
+            id="curated_006",
+            name="Escalation Required",
+            category="retry_limit_exhaustion",
+            customer_id="CUST-3001",
+            merchant_id="MERCH-003",
+            amount=12000_00,
+            method="card",
+            instrument_id="card_escalate",
+            failure_code="issuer_unavailable",
+            failure_reason="Issuer temporarily unavailable after prior retries",
+            history=[
+                ScenarioHistory(
+                    event_type="failure", payment_id=escalation_payment_id,
+                    customer_id="CUST-3001", merchant_id="MERCH-003",
+                    amount=12000_00, method="card", instrument_id="card_escalate",
+                    failure_code="issuer_unavailable", outcome="FAILURE",
+                    action_taken="RETRY_AFTER", retry_after_seconds=600,
+                    timestamp=_ts(0.06 - index * 0.01),
+                )
+                for index in range(3)
+            ],
+            action_outcomes={
+                "RETRY_NOW": "FAILURE", "RETRY_AFTER": "FAILURE",
+                "SUGGEST_METHOD": "FAILURE", "CUSTOMER_NUDGE": "FAILURE",
+                "STOP": "SKIPPED", "ESCALATE": "SKIPPED",
+            },
+            ground_truth_actions=["ESCALATE"],
+            has_useful_memory=True,
+            instruments=[{"alias": "card_escalate", "type": "card", "status": "active"}],
+            current_payment_id=escalation_payment_id,
         ))
 
         return [self._parameterize_scenario(scenario) for scenario in scenarios]
@@ -706,8 +742,8 @@ class ScenarioGenerator:
                 )
                 for i in range(3)
             ],
-            action_outcomes={"RETRY_NOW": "FAILURE", "RETRY_AFTER": "FAILURE", "SUGGEST_METHOD": "FAILURE", "CUSTOMER_NUDGE": "FAILURE", "STOP": "SKIPPED"},
-            ground_truth_actions=["STOP"],
+            action_outcomes={"RETRY_NOW": "FAILURE", "RETRY_AFTER": "FAILURE", "SUGGEST_METHOD": "FAILURE", "CUSTOMER_NUDGE": "FAILURE", "STOP": "SKIPPED", "ESCALATE": "SKIPPED"},
+            ground_truth_actions=["ESCALATE"],
             has_useful_memory=True,
             instruments=[{"alias": instrument_alias, "type": method, "status": "active"}],
             current_payment_id=payment_id,

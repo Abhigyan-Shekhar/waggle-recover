@@ -164,9 +164,24 @@ class RecoveryOrchestrator:
         )
 
         # Apply policy modifications
+        candidate_action = candidate.action
         final_decision = self._apply_policy(candidate, policy_result)
         final_decision.policy_result = policy_result.result
         final_decision.policy_note = policy_result.formatted()
+        if final_decision.action == RecoveryAction.ESCALATE:
+            final_decision.human_review_required = True
+            final_decision.escalation_reason = policy_result.block_reason or "No safe automated recovery remains"
+            final_decision.attempt_count = retry_count
+            final_decision.max_automated_attempts = policy.max_recovery_attempts
+            last_action = candidate_action
+            if last_action in (RecoveryAction.STOP, RecoveryAction.ESCALATE):
+                persisted_action = self.db.get_last_attempt_action_for_payment(
+                    failure.external_payment_id, failure.customer_id, failure.merchant_id
+                )
+                if persisted_action:
+                    last_action = RecoveryAction(persisted_action)
+            final_decision.last_safe_action = last_action
+            final_decision.status = "human_review_required"
 
         decision_trace.update({
             "policy_result": policy_result.result.value,
@@ -262,6 +277,7 @@ class RecoveryOrchestrator:
             "decision_mode": decision_trace.get("decision_mode", "deterministic"),
             "agent_trace": decision_trace if decision_trace.get("decision_mode") == "agent" else None,
             "strategy_priors": [item.model_dump(mode="json") for item in bundle.strategy_priors],
+            "escalation": self._escalation_payload(bundle, final_decision) if final_decision.human_review_required else None,
             "metrics": {
                 "total_latency_ms": round(total_latency_ms, 2),
                 "decision_latency_ms": round(decision_latency_ms, 2),
@@ -424,15 +440,39 @@ class RecoveryOrchestrator:
             return candidate
 
         if policy_result.result == PolicyResult.BLOCK:
-            candidate.action = policy_result.modified_action or RecoveryAction.STOP
+            # A policy BLOCK means autonomous recovery is no longer permitted.
+            # Do not turn it into a quiet STOP: preserve an auditable, explicit
+            # handoff for a human operator and ensure the executor moves no money.
+            candidate.action = RecoveryAction.ESCALATE
             candidate.retry_after_seconds = None
             candidate.recommended_method = None
             candidate.recommended_route = None
-            candidate.reason = f"Policy BLOCKED: {policy_result.block_reason}"
-            candidate.confidence = 1.0  # Certain about STOP
+            candidate.reason = f"Human review required: {policy_result.block_reason}"
+            candidate.confidence = 1.0
             return candidate
 
         return candidate
+
+    @staticmethod
+    def _escalation_payload(bundle, decision: RecoveryDecision) -> dict[str, Any]:
+        """Stable audit-first handoff payload; no external ticket is created."""
+        failure = bundle.current_failure
+        evidence_ids = [ref.waggle_node_id for ref in [*bundle.accepted_evidence, *bundle.discarded_evidence]]
+        return {
+            "action": RecoveryAction.ESCALATE.value,
+            "human_review_required": True,
+            "reason": decision.escalation_reason,
+            "merchant_id": failure.merchant_id,
+            "customer_id": failure.customer_id,
+            "failure_code": failure.failure_code,
+            "attempt_count": decision.attempt_count,
+            "max_automated_attempts": decision.max_automated_attempts,
+            "last_safe_action": decision.last_safe_action.value if decision.last_safe_action else None,
+            "evidence_ids": evidence_ids,
+            "policy_result": PolicyResult.BLOCK.value,
+            "money_movement": "NONE",
+            "recommended_next_step": "Manual review / customer outreach",
+        }
 
     @staticmethod
     def _trace_action_summary(decision: RecoveryDecision) -> str:

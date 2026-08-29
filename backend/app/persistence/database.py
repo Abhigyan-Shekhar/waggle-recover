@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS recovery_decisions (
     evidence_json TEXT DEFAULT '[]',
     discarded_json TEXT DEFAULT '[]',
     explanation TEXT DEFAULT '',
+    human_review_required INTEGER NOT NULL DEFAULT 0,
+    escalation_reason TEXT DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_automated_attempts INTEGER NOT NULL DEFAULT 0,
+    last_safe_action TEXT DEFAULT NULL,
     waggle_node_id TEXT DEFAULT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (failure_id) REFERENCES payment_failures(id)
@@ -148,6 +153,20 @@ class Database:
     def _init(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            # Existing local demo databases predate the escalation columns.
+            # Keep startup migration small and idempotent for clean checkouts
+            # as well as already-running hackathon demos.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(recovery_decisions)")}
+            additions = {
+                "human_review_required": "INTEGER NOT NULL DEFAULT 0",
+                "escalation_reason": "TEXT DEFAULT ''",
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "max_automated_attempts": "INTEGER NOT NULL DEFAULT 0",
+                "last_safe_action": "TEXT DEFAULT NULL",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE recovery_decisions ADD COLUMN {name} {definition}")
 
     def clear_recovery_data(self) -> None:
         """Clear only this demo application's operational data.
@@ -208,12 +227,16 @@ class Database:
                     id, failure_id, action, retry_after_seconds, recommended_method,
                     recommended_route, confidence, reason, status, policy_result,
                     policy_note, memory_contribution, retrieval_mode, evidence_json,
-                    discarded_json, explanation, waggle_node_id, created_at
+                    discarded_json, explanation, human_review_required,
+                    escalation_reason, attempt_count, max_automated_attempts,
+                    last_safe_action, waggle_node_id, created_at
                 ) VALUES (
                     :id, :failure_id, :action, :retry_after_seconds, :recommended_method,
                     :recommended_route, :confidence, :reason, :status, :policy_result,
                     :policy_note, :memory_contribution, :retrieval_mode, :evidence_json,
-                    :discarded_json, :explanation, :waggle_node_id, :created_at
+                    :discarded_json, :explanation, :human_review_required,
+                    :escalation_reason, :attempt_count, :max_automated_attempts,
+                    :last_safe_action, :waggle_node_id, :created_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
@@ -312,6 +335,28 @@ class Database:
             (external_payment_id, customer_id, merchant_id),
         )
         return rows[0]["cnt"] if rows else 0
+
+    def get_last_attempt_action_for_payment(
+        self,
+        external_payment_id: str,
+        customer_id: str,
+        merchant_id: str,
+    ) -> str | None:
+        """Return the last recorded automated action for an audit handoff."""
+        row = self.execute_one(
+            """
+            SELECT ra.action_type
+            FROM recovery_attempts ra
+            JOIN payment_failures pf ON ra.failure_id = pf.id
+            WHERE pf.external_payment_id = ?
+              AND pf.customer_id = ? AND pf.merchant_id = ?
+              AND ra.action_type NOT IN ('STOP', 'ESCALATE')
+            ORDER BY ra.executed_at DESC
+            LIMIT 1
+            """,
+            (external_payment_id, customer_id, merchant_id),
+        )
+        return str(row["action_type"]) if row else None
 
     def get_recent_customer_merchant_activity(
         self,
@@ -452,6 +497,8 @@ class Database:
             SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
                    rd.confidence, rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
+                   rd.policy_result, rd.human_review_required, rd.escalation_reason,
+                   rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
                    ra.outcome, ra.recovered_amount, ra.executed_at as attempt_at, rd.id as decision_id
             FROM payment_failures pf
             LEFT JOIN recovery_decisions rd ON rd.failure_id = pf.id
@@ -469,6 +516,8 @@ class Database:
             SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
                    rd.confidence, rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
+                   rd.policy_result, rd.human_review_required, rd.escalation_reason,
+                   rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
                    ra.outcome, ra.recovered_amount, rd.id as decision_id
             FROM payment_failures pf
             LEFT JOIN recovery_decisions rd ON rd.failure_id = pf.id

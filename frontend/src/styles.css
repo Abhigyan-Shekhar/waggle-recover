@@ -98,6 +98,9 @@ a { color: inherit; }
   box-shadow: 0 0 0 4px rgba(86, 201, 138, .1);
 }
 .service-status.offline i { background: var(--danger); box-shadow: 0 0 0 4px rgba(245, 141, 129, .1); }
+.demo-tour-status { position: sticky; top: 64px; z-index: 29; display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px max(24px, calc((100vw - 1320px) / 2)); border-bottom: 1px solid #4a6855; background: rgba(17, 39, 28, .97); color: #d9f5e3; font-size: .73rem; }
+.demo-tour-status > span:not(.spinner) { color: #abc8b4; }
+.demo-tour-status button { margin-left: auto; padding: 5px 9px; border: 1px solid #6ba882; border-radius: 5px; background: transparent; color: #d9f5e3; font-size: .68rem; font-weight: 750; }
 
 main { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
 .hero {
@@ -151,6 +154,8 @@ h1 em { color: #89948e; font-style: normal; font-weight: 520; }
 }
 .primary-action:hover:not(:disabled) { background: #b8f2cd; border-color: #b8f2cd; }
 .primary-action:active:not(:disabled) { background: #86dca6; }
+.demo-tour-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 42px; padding: 0 14px; border: 1px solid #607c6a; border-radius: 7px; background: #16231c; color: #b9eecb; font-size: .78rem; font-weight: 800; }
+.demo-tour-button:hover:not(:disabled) { border-color: var(--signal); background: #1d3226; }
 .secondary-action {
   padding: 10px 2px;
   color: #c5cec9;
@@ -287,6 +292,11 @@ h1 em { color: #89948e; font-style: normal; font-weight: 520; }
 .instrument-swap { display: flex; align-items: center; gap: 12px; font: 750 .8rem ui-monospace, monospace; }
 .instrument-swap i { color: var(--amber); font-style: normal; }
 .stale-alert p { max-width: 540px; margin: 11px 0 0; color: #d9bfa8; font-size: .77rem; line-height: 1.5; }
+.escalation-alert { position: relative; margin: 22px 22px 18px; padding: 18px 20px; border: 1px solid #b5534f; border-left: 3px solid #ef7770; border-radius: 7px; background: #291817; overflow: hidden; }
+.escalation-alert::after { content: "HANDOFF"; position: absolute; right: -7px; top: 15px; color: rgba(239, 119, 112, .06); font-size: 2.8rem; font-weight: 900; letter-spacing: .06em; transform: rotate(6deg); }
+.escalation-alert > strong { display: block; margin: 6px 0 10px; color: #ffd0cc; font-size: 1.4rem; letter-spacing: -.025em; text-transform: uppercase; }
+.escalation-alert p { position: relative; z-index: 1; max-width: 540px; margin: 0; color: #e0beb9; font-size: .77rem; line-height: 1.6; }
+.escalation-alert small { display: block; position: relative; z-index: 1; margin-top: 12px; color: #ffd0cc; font-weight: 700; }
 
 .decision-flow { display: grid; grid-template-columns: 1fr 70px 1fr 70px 1fr; align-items: center; padding: 20px 22px; }
 .decision-step { min-width: 0; min-height: 102px; padding: 15px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
@@ -294,6 +304,9 @@ h1 em { color: #89948e; font-style: normal; font-weight: 520; }
 .decision-step span { color: var(--quiet); font: 700 .62rem ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
 .decision-step strong { margin: 12px 0 6px; font-size: .86rem; overflow-wrap: anywhere; text-transform: capitalize; }
 .decision-step small { color: var(--muted); font-size: .68rem; }
+.blocked-step, .escalation-step { border-color: #b5534f; background: #281918; }
+.blocked-step strong, .escalation-step strong { color: #ffb8b0; }
+.flow-link.blocked span { color: #ef7770; }
 .failure-step { border-top: 2px solid var(--danger); }
 .evidence-step { border-top: 2px solid #82a8d2; }
 .rejected-step { border-top: 2px solid var(--amber); background: #19140f; }
@@ -401,6 +414,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .outcome-text { font: 750 .65rem ui-monospace, monospace; }
 .outcome-text.success { color: var(--signal); }
 .outcome-text.failure { color: var(--danger); }
+.outcome-text.escalated { color: #ffaaa2; }
 .text-action, .show-more { border: 0; background: transparent; color: #cbd6d0; font-size: .7rem; font-weight: 750; white-space: nowrap; }
 .text-action span { margin-left: 5px; color: var(--signal); }
 .text-action:hover, .show-more:hover { color: var(--signal); }

@@ -62,8 +62,9 @@ class RecoveryExecutor:
                 simulation_outcomes=simulation_outcomes,
             )
         else:
-            # Real execution placeholder — STOP actions don't recover
-            if decision.action == RecoveryAction.STOP:
+            # STOP and ESCALATE are terminal safety states. Neither can move
+            # money; a real capture can only close an actually pending action.
+            if decision.action in (RecoveryAction.STOP, RecoveryAction.ESCALATE):
                 outcome = OutcomeStatus.SKIPPED
                 recovered_amount = 0
             else:
@@ -110,7 +111,7 @@ class RecoveryExecutor:
                     return OutcomeStatus.SKIPPED, 0
 
         # Default probabilistic simulation
-        if decision.action == RecoveryAction.STOP:
+        if decision.action in (RecoveryAction.STOP, RecoveryAction.ESCALATE):
             return OutcomeStatus.SKIPPED, 0
 
         if decision.action == RecoveryAction.CUSTOMER_NUDGE:

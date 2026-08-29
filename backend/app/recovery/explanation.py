@@ -97,6 +97,14 @@ def build_explanation(
         lines.append(f"  Recommended method: {decision.recommended_method}")
     lines.append(f"  Confidence: {decision.confidence:.0%}")
     lines.append(f"  Reason: {decision.reason}")
+    if decision.human_review_required:
+        lines.append("")
+        lines.append("HUMAN REVIEW REQUIRED")
+        lines.append("  Automated recovery stopped; no payment action was executed.")
+        lines.append(f"  Reason: {decision.escalation_reason}")
+        lines.append(f"  Attempts used: {decision.attempt_count}/{decision.max_automated_attempts}")
+        lines.append("  Policy result: BLOCK")
+        lines.append("  Recommended next step: Manual review / customer outreach")
     lines.append("")
 
     lines.append("═══════════════════════════════════════════")
@@ -165,5 +173,10 @@ def build_structured_audit(
             "confidence": decision.confidence,
             "reason": decision.reason,
             "memory_contribution": decision.memory_contribution,
+            "human_review_required": decision.human_review_required,
+            "escalation_reason": decision.escalation_reason,
+            "attempt_count": decision.attempt_count,
+            "max_automated_attempts": decision.max_automated_attempts,
+            "last_safe_action": decision.last_safe_action,
         },
     }

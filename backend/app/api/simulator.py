@@ -232,7 +232,9 @@ async def run_demo_scenario(
     from app.domain.models import NormalizedPaymentEvent
     event = NormalizedPaymentEvent(
         event_type="payment.failed",
-        payment_id=f"demo_{scenario.id}_{uuid.uuid4().hex[:6]}",
+        # Retry-limit scenarios intentionally reuse a payment ID so the
+        # Policy Guard sees the same recovery episode and its attempt budget.
+        payment_id=scenario.current_payment_id or f"demo_{scenario.id}_{uuid.uuid4().hex[:6]}",
         customer_id=scenario.customer_id,
         merchant_id=scenario.merchant_id,
         amount=scenario.amount,
