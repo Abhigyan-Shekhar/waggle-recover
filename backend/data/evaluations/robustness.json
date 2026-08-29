@@ -1,0 +1,367 @@
+{
+  "disclosure": "All money and outcomes are seeded simulations; this is not production GMV.",
+  "evaluation": "Robustness Evaluation",
+  "groq_calls": 0,
+  "mode": "deterministic_evaluation",
+  "scenario_count": 1000,
+  "seeds": [
+    11,
+    29,
+    47,
+    83,
+    131
+  ],
+  "systems": {
+    "baseline_a": {
+      "coverage_by_scenario_type": {
+        "blocked_payment_method": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "conflicting_history": {
+          "action_accuracy": 1.0,
+          "correct": 40,
+          "total": 40,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "contradictory_evidence": {
+          "action_accuracy": 1.0,
+          "correct": 5,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "customer_specific": {
+          "action_accuracy": 1.0,
+          "correct": 85,
+          "total": 85,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "expired_instrument": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 85,
+          "unsafe": 85,
+          "unsafe_action_rate": 1.0
+        },
+        "failed_alternative": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 60,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "insufficient_balance": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_policy_change": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_specific": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "method_replacement": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 110,
+          "unsafe": 5,
+          "unsafe_action_rate": 0.0455
+        },
+        "no_history_control": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "retry_limit_exhaustion": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 70,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "route_degradation": {
+          "action_accuracy": 1.0,
+          "correct": 65,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "successful_alternative": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "transient_issuer": {
+          "action_accuracy": 1.0,
+          "correct": 135,
+          "total": 135,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        }
+      },
+      "parameter_aware_action_accuracy": 0.42,
+      "policy_violation_rate": 0.01,
+      "recovery_success": 0.42,
+      "scenario_count": 1000,
+      "simulated_gmv_recovery": 0.4469,
+      "stale_rejection": 0.0,
+      "unnecessary_escalation_rate": 0.0,
+      "unsafe_action_rate": 0.09
+    },
+    "baseline_b": {
+      "coverage_by_scenario_type": {
+        "blocked_payment_method": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "conflicting_history": {
+          "action_accuracy": 1.0,
+          "correct": 40,
+          "total": 40,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "contradictory_evidence": {
+          "action_accuracy": 1.0,
+          "correct": 5,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "customer_specific": {
+          "action_accuracy": 1.0,
+          "correct": 85,
+          "total": 85,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "expired_instrument": {
+          "action_accuracy": 1.0,
+          "correct": 85,
+          "total": 85,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "failed_alternative": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 60,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "insufficient_balance": {
+          "action_accuracy": 1.0,
+          "correct": 65,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_policy_change": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_specific": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "method_replacement": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 110,
+          "unsafe": 5,
+          "unsafe_action_rate": 0.0455
+        },
+        "no_history_control": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "retry_limit_exhaustion": {
+          "action_accuracy": 0.0,
+          "correct": 0,
+          "total": 70,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "route_degradation": {
+          "action_accuracy": 1.0,
+          "correct": 65,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "successful_alternative": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "transient_issuer": {
+          "action_accuracy": 1.0,
+          "correct": 135,
+          "total": 135,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        }
+      },
+      "parameter_aware_action_accuracy": 0.75,
+      "policy_violation_rate": 0.01,
+      "recovery_success": 0.75,
+      "scenario_count": 1000,
+      "simulated_gmv_recovery": 0.7449,
+      "stale_rejection": 0.0,
+      "unnecessary_escalation_rate": 0.0,
+      "unsafe_action_rate": 0.005
+    },
+    "system_c": {
+      "coverage_by_scenario_type": {
+        "blocked_payment_method": {
+          "action_accuracy": 1.0,
+          "correct": 5,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "conflicting_history": {
+          "action_accuracy": 1.0,
+          "correct": 40,
+          "total": 40,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "contradictory_evidence": {
+          "action_accuracy": 1.0,
+          "correct": 5,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "customer_specific": {
+          "action_accuracy": 1.0,
+          "correct": 85,
+          "total": 85,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "expired_instrument": {
+          "action_accuracy": 1.0,
+          "correct": 85,
+          "total": 85,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "failed_alternative": {
+          "action_accuracy": 1.0,
+          "correct": 60,
+          "total": 60,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "insufficient_balance": {
+          "action_accuracy": 1.0,
+          "correct": 65,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_policy_change": {
+          "action_accuracy": 1.0,
+          "correct": 5,
+          "total": 5,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "merchant_specific": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "method_replacement": {
+          "action_accuracy": 1.0,
+          "correct": 110,
+          "total": 110,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "no_history_control": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "retry_limit_exhaustion": {
+          "action_accuracy": 1.0,
+          "correct": 70,
+          "total": 70,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "route_degradation": {
+          "action_accuracy": 1.0,
+          "correct": 65,
+          "total": 65,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "successful_alternative": {
+          "action_accuracy": 1.0,
+          "correct": 90,
+          "total": 90,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        },
+        "transient_issuer": {
+          "action_accuracy": 1.0,
+          "correct": 135,
+          "total": 135,
+          "unsafe": 0,
+          "unsafe_action_rate": 0.0
+        }
+      },
+      "parameter_aware_action_accuracy": 1.0,
+      "policy_violation_rate": 0.0,
+      "recovery_success": 0.87,
+      "scenario_count": 1000,
+      "simulated_gmv_recovery": 0.8738,
+      "stale_rejection": 1.0,
+      "unnecessary_escalation_rate": 0.0,
+      "unsafe_action_rate": 0.0
+    }
+  }
+}

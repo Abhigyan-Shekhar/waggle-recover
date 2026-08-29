@@ -12,6 +12,7 @@ from waggle.graph import MemoryGraph
 from waggle.models import RelationType
 
 from app.domain.models import (
+    EscalationRecord,
     MerchantPolicy,
     PaymentFailure,
     PaymentInstrument,
@@ -213,9 +214,48 @@ class WaggleRecoveryMemoryAdapter:
         LOGGER.debug("Stored outcome %s as Waggle node %s", attempt.id, node_id)
         return node_id
 
+    def store_escalation_record(
+        self,
+        escalation: EscalationRecord,
+        decision_node_id: str,
+        failure_node_id: str,
+    ) -> str:
+        """Persist a human-review handoff as a first-class audit node."""
+        data = escalation.model_dump(mode="json")
+        result = self.graph.add_node(
+            label=f"Human review {escalation.id[:8]}",
+            content=(
+                f"Automated recovery stopped for episode {escalation.recovery_episode_id}. "
+                f"Reason: {escalation.escalation_reason}. Money movement: NONE."
+            ),
+            node_type=mapper.decision_node_type(),
+            tags=[
+                "escalation_record",
+                "human_review",
+                f"merchant:{escalation.merchant_id}",
+                f"customer:{escalation.customer_id}",
+                f"episode:{escalation.recovery_episode_id}",
+                f"state:{escalation.state.lower()}",
+            ],
+            metadata={**data, "money_movement": "NONE"},
+            valid_from=escalation.created_at,
+        )
+        for target_id, relation in (
+            (decision_node_id, "escalation_of_decision"),
+            (failure_node_id, "escalation_of_failure"),
+        ):
+            self.graph.add_edge(
+                source_id=result.node.id,
+                target_id=target_id,
+                relationship=RelationType.DERIVED_FROM,
+                metadata={"relation": relation, "human_review_required": True},
+            )
+        return result.node.id
+
     def store_merchant_policy(self, policy: MerchantPolicy) -> str:
         """Store merchant policy in Waggle. Returns Waggle node ID."""
         policy_dict = policy.model_dump(mode="json")
+        old_policy = self.get_merchant_policy_node(policy.merchant_id)
 
         result = self.graph.add_node(
             label=f"Merchant policy {policy.merchant_id}",
@@ -223,7 +263,29 @@ class WaggleRecoveryMemoryAdapter:
             node_type=mapper.policy_node_type(),
             tags=mapper.policy_tags(policy_dict),
             metadata=policy_dict,
+            valid_from=policy.effective_from,
         )
+        if old_policy and old_policy["id"] != result.node.id:
+            supersession_edge = self.graph.add_edge(
+                source_id=result.node.id,
+                target_id=old_policy["id"],
+                relationship=RelationType.UPDATES,
+                metadata={
+                    "relation": "policy_supersession",
+                    "new_policy_id": policy.policy_id,
+                    "old_policy_id": old_policy.get("metadata", {}).get("policy_id", ""),
+                    "authoritative": True,
+                },
+            )
+            # An UPDATES edge is the audit relationship; resolving it is the
+            # explicit operation that closes the superseded node's validity
+            # window in Waggle.  Retrieval must never depend on rank ordering
+            # between two apparently-current policies.
+            self.graph.resolve_conflict(
+                edge_id=supersession_edge.id,
+                winner=result.node.id,
+                resolution_note=f"Merchant policy v{policy.version} became authoritative",
+            )
         LOGGER.debug("Stored merchant policy for %s as Waggle node %s", policy.merchant_id, result.node.id)
         return result.node.id
 
@@ -238,21 +300,14 @@ class WaggleRecoveryMemoryAdapter:
         max_nodes: int = 20,
     ) -> list[dict[str, Any]]:
         """Retrieve all relevant history for a customer from Waggle."""
-        query = f"customer {customer_id} payment recovery"
-        if failure_code:
-            query += f" {failure_code}"
-        if instrument_alias:
-            query += f" {instrument_alias}"
-
         try:
-            result = self.graph.query(
-                query=query,
-                max_nodes=max_nodes,
-                max_depth=2,
-            )
-            nodes = []
-            for node in result.nodes:
-                tags = node.tags or []
+            # This is an authoritative scope lookup, not semantic search. Scan
+            # exact tags first so a large tenant cannot crowd the right
+            # customer/merchant history out of a semantic top-N result.
+            snapshot = self.graph.get_graph_snapshot()
+            nodes: list[dict[str, Any]] = []
+            for node in snapshot.get("nodes", []):
+                tags = node.get("tags") or []
                 # Filter to payment domain nodes
                 if any(
                     t in tags
@@ -262,10 +317,11 @@ class WaggleRecoveryMemoryAdapter:
                     # separate merchant-pattern query handles cross-customer learning.
                     if (any(t == f"customer:{customer_id}" for t in tags)
                             and (not merchant_id or f"merchant:{merchant_id}" in tags)):
-                        nodes.append(self._node_to_dict(node))
-            return nodes
+                        nodes.append(dict(node))
+            nodes.sort(key=self._snapshot_event_time, reverse=True)
+            return nodes[:max_nodes]
         except Exception as e:
-            LOGGER.warning("Waggle query failed for customer %s: %s", customer_id, e)
+            LOGGER.warning("Waggle exact history lookup failed for customer %s: %s", customer_id, e)
             return []
 
     def get_instrument_node(self, instrument_alias: str, customer_id: str = "") -> dict[str, Any] | None:
@@ -292,11 +348,26 @@ class WaggleRecoveryMemoryAdapter:
         """Find merchant policy node in Waggle."""
         query = f"merchant policy {merchant_id}"
         try:
-            result = self.graph.query(query=query, max_nodes=3, max_depth=0)
+            result = self.graph.query(query=query, max_nodes=10, max_depth=0)
+            candidates: list[dict[str, Any]] = []
             for node in result.nodes:
                 if "merchant_policy" in (node.tags or []):
                     if f"merchant:{merchant_id}" in (node.tags or []):
-                        return self._node_to_dict(node)
+                        candidate = self._node_to_dict(node)
+                        if not candidate.get("valid_to"):
+                            candidates.append(candidate)
+            if candidates:
+                # Semantic result order is relevance-based, not authority-
+                # based. Pick the newest explicit policy version so retrieval
+                # remains deterministic even while an invalidation has not yet
+                # propagated through a query cache.
+                return max(
+                    candidates,
+                    key=lambda item: (
+                        int(item.get("metadata", {}).get("version", 1)),
+                        str(item.get("metadata", {}).get("effective_from", "")),
+                    ),
+                )
         except Exception as e:
             LOGGER.debug("Could not find merchant policy for %s: %s", merchant_id, e)
         return None
@@ -464,15 +535,11 @@ class WaggleRecoveryMemoryAdapter:
         Lookup-first path: check for a high-confidence direct match.
         Returns the most recent successful outcome node if found.
         """
-        query = (
-            f"recovery outcome success customer {customer_id} "
-            f"merchant {merchant_id} {failure_code} {instrument_alias}"
-        )
         try:
-            result = self.graph.query(query=query, max_nodes=5, max_depth=1)
-            # Find nodes tagged as successful outcomes for this customer+instrument
-            for node in result.nodes:
-                tags = node.tags or []
+            snapshot = self.graph.get_graph_snapshot()
+            candidates: list[dict[str, Any]] = []
+            for node in snapshot.get("nodes", []):
+                tags = node.get("tags") or []
                 if (
                     "recovery_outcome" in tags
                     and "outcome:success" in tags
@@ -481,9 +548,11 @@ class WaggleRecoveryMemoryAdapter:
                     and f"instrument:{instrument_alias}" in tags
                     and f"failure_reason:{failure_code}" in tags
                 ):
-                    node_dict = self._node_to_dict(node)
-                    node_dict["_is_direct_match"] = True
-                    return node_dict
+                    candidates.append(dict(node))
+            if candidates:
+                node_dict = max(candidates, key=self._snapshot_event_time)
+                node_dict["_is_direct_match"] = True
+                return node_dict
         except Exception as e:
             LOGGER.debug("Lookup-first failed: %s", e)
         return None
@@ -506,3 +575,15 @@ class WaggleRecoveryMemoryAdapter:
             "similarity_score": node.similarity_score,
             "final_score": node.final_score,
         }
+
+    @staticmethod
+    def _snapshot_event_time(node: dict[str, Any]) -> str:
+        """Stable chronology for exact snapshot lookups."""
+        metadata = node.get("metadata") or {}
+        return str(
+            metadata.get("executed_at")
+            or metadata.get("occurred_at")
+            or node.get("valid_from")
+            or node.get("created_at")
+            or ""
+        )

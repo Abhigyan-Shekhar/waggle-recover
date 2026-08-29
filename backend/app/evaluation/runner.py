@@ -20,6 +20,7 @@ from app.evaluation.generator import EvalScenario, ScenarioGenerator
 from app.evaluation.metrics import ComparisonSummary, SystemMetrics
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
+from app.recovery.episodes import recovery_episode_for
 from app.recovery.orchestrator import RecoveryOrchestrator
 
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ def run_evaluation(
     waggle_db_path: str | None = None,
     settings: Settings | None = None,
     result_sink: Callable[[dict[str, Any]], None] | None = None,
+    scenarios: list[EvalScenario] | None = None,
 ) -> ComparisonSummary:
     """
     Run full evaluation: load scenarios, populate Waggle memory, evaluate all three systems.
@@ -72,7 +74,7 @@ def run_evaluation(
     # Generate scenarios
     LOGGER.info("Generating %d evaluation scenarios (seed=%d)...", scenario_count, seed)
     generator = ScenarioGenerator(seed=seed)
-    scenarios = generator.generate(scenario_count)
+    scenarios = scenarios if scenarios is not None else generator.generate(scenario_count)
     LOGGER.info("Generated %d scenarios", len(scenarios))
 
     # Initialize metrics
@@ -120,10 +122,23 @@ def _populate_memory(
     scenario: EvalScenario,
 ) -> None:
     """Populate Waggle with historical context for a scenario."""
+    if scenario.merchant_policies:
+        from app.domain.enums import RecoveryAction
+        from app.domain.models import MerchantPolicy
+
+        for raw_policy in scenario.merchant_policies:
+            policy_data = dict(raw_policy)
+            policy_data.setdefault("merchant_id", scenario.merchant_id)
+            if "allowed_actions" in policy_data:
+                policy_data["allowed_actions"] = [
+                    item if isinstance(item, RecoveryAction) else RecoveryAction(item)
+                    for item in policy_data["allowed_actions"]
+                ]
+            adapter.store_merchant_policy(MerchantPolicy(**policy_data))
     # Outcomes need a real application failure ID (SQLite enforces the foreign
     # key), while generator event IDs intentionally model separate gateway
     # attempts. Keep the latest failure context per instrument for that link.
-    failure_context: dict[tuple[str, str, str], tuple[str, str, str, str, str]] = {}
+    failure_context: dict[tuple[str, str, str], tuple[str, str, str, str, str, str]] = {}
     # Register instruments
     for instr in scenario.instruments:
         alias = instr["alias"]
@@ -163,6 +178,16 @@ def _populate_memory(
             from app.domain.enums import OutcomeStatus, RecoveryAction
             from app.domain.models import PaymentFailure, RecoveryAttempt
 
+            episode = recovery_episode_for(NormalizedPaymentEvent(
+                event_type="payment.failed",
+                payment_id=hist.payment_id,
+                customer_id=hist.customer_id,
+                merchant_id=hist.merchant_id,
+                amount=hist.amount,
+                method=hist.method,
+                instrument_id=hist.instrument_id,
+            ))
+            db.upsert_recovery_episode(episode.model_dump(mode="json"))
             failure = PaymentFailure(
                 external_payment_id=hist.payment_id,
                 customer_id=hist.customer_id,
@@ -173,6 +198,7 @@ def _populate_memory(
                 failure_code=hist.failure_code,
                 failure_reason=hist.failure_code,
                 occurred_at=hist.timestamp,
+                recovery_episode_id=episode.id,
             )
             waggle_node_id = adapter.store_payment_failure(failure)
             failure_dict = failure.model_dump(mode="json")
@@ -185,6 +211,7 @@ def _populate_memory(
                 failure.method,
                 failure.instrument_id,
                 failure.failure_code,
+                episode.id,
             )
             if hist.action_taken:
                 failed_attempt = RecoveryAttempt(
@@ -200,6 +227,7 @@ def _populate_memory(
                     method=hist.method,
                     instrument_id=hist.instrument_id,
                     failure_code=hist.failure_code,
+                    recovery_episode_id=episode.id,
                 )
                 outcome_node_id = adapter.store_recovery_outcome(
                     failed_attempt,
@@ -218,8 +246,19 @@ def _populate_memory(
                 # Some merchant-level histories begin with a recorded success.
                 # Create a minimal observable failure context, never a synthetic
                 # success outcome, so persistence and graph provenance stay valid.
+                context_payment_id = f"context_{hist.payment_id}"
+                episode = recovery_episode_for(NormalizedPaymentEvent(
+                    event_type="payment.failed",
+                    payment_id=context_payment_id,
+                    customer_id=hist.customer_id,
+                    merchant_id=hist.merchant_id,
+                    amount=hist.amount,
+                    method=hist.method,
+                    instrument_id=hist.instrument_id,
+                ))
+                db.upsert_recovery_episode(episode.model_dump(mode="json"))
                 failure = PaymentFailure(
-                    external_payment_id=f"context_{hist.payment_id}",
+                    external_payment_id=context_payment_id,
                     customer_id=hist.customer_id,
                     merchant_id=hist.merchant_id,
                     amount=hist.amount,
@@ -228,6 +267,7 @@ def _populate_memory(
                     failure_code=scenario.failure_code,
                     failure_reason="Historical recovery context",
                     occurred_at=hist.timestamp,
+                    recovery_episode_id=episode.id,
                 )
                 failure_node_id = adapter.store_payment_failure(failure)
                 failure_dict = failure.model_dump(mode="json")
@@ -240,6 +280,7 @@ def _populate_memory(
                     failure.method,
                     failure.instrument_id,
                     failure.failure_code,
+                    episode.id,
                 )
                 failure_context[key] = context
             attempt = RecoveryAttempt(
@@ -255,6 +296,7 @@ def _populate_memory(
                 method=context[2],
                 instrument_id=context[3],
                 failure_code=context[4],
+                recovery_episode_id=context[5],
             )
             waggle_node_id = adapter.store_recovery_outcome(attempt, failure_node_id=context[1])
             attempt_dict = attempt.model_dump(mode="json")

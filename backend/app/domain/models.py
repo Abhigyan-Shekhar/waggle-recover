@@ -40,6 +40,7 @@ class PaymentFailure(BaseModel):
     failure_step: str = ""
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     raw_event_id: str = ""
+    recovery_episode_id: str = ""
     failure_class: FailureClass = FailureClass.UNKNOWN
 
     def model_post_init(self, __context: Any) -> None:
@@ -90,7 +91,11 @@ class PaymentInstrument(BaseModel):
 
 
 class MerchantPolicy(BaseModel):
+    policy_id: str = Field(default_factory=_new_id)
     merchant_id: str
+    version: int = 1
+    effective_from: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    supersedes_policy_id: str | None = None
     max_recovery_attempts: int = 3
     min_retry_interval_seconds: int = 300  # 5 min
     max_retry_interval_seconds: int = 3600  # 1 hour
@@ -106,6 +111,9 @@ class MerchantPolicy(BaseModel):
     blocked_methods: list[str] = Field(default_factory=list)
     blocked_routes: list[str] = Field(default_factory=list)
     cooldown_seconds: int = 600
+    requires_human_review: bool = False
+    requires_human_review_below_confidence: bool = False
+    min_automatic_confidence: float = 0.60
 
     def allows_action(self, action: RecoveryAction) -> bool:
         return action in self.allowed_actions
@@ -165,6 +173,13 @@ class RecoveryDecision(BaseModel):
     recommended_method: str | None = None
     recommended_route: str | None = None
     confidence: float = 0.5
+    evidence_confidence: float = 0.0
+    evidence_quality: str = "UNKNOWN"
+    uncertainty_reason: str = ""
+    abstention_reason: str = ""
+    risk_score: int = 0
+    risk_band: str = "LOW"
+    risk_factors: list[str] = Field(default_factory=list)
     reason: str = ""
     status: str = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -190,6 +205,7 @@ class RecoveryDecision(BaseModel):
     attempt_count: int = 0
     max_automated_attempts: int = 0
     last_safe_action: RecoveryAction | None = None
+    recovery_episode_id: str = ""
 
     # Waggle node id (populated after storing)
     waggle_node_id: str | None = None
@@ -222,6 +238,7 @@ class RecoveryAttempt(BaseModel):
     method: str = ""
     instrument_id: str = ""
     failure_code: str = ""
+    recovery_episode_id: str = ""
 
     # Waggle node id for outcome
     waggle_outcome_node_id: str | None = None
@@ -247,6 +264,74 @@ class NormalizedPaymentEvent(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     source: str = "razorpay"  # razorpay / simulator
+    event_id: str = ""
+    test_mode: bool = True
+    subscription_id: str = ""
+    mandate_id: str = ""
+    invoice_id: str = ""
+
+
+class RevenueRiskEvent(BaseModel):
+    """Provider-neutral revenue-risk input normalized into the recovery pipeline."""
+
+    risk_type: str  # PAYMENT_FAILURE / SUBSCRIPTION_FAILURE
+    event_id: str
+    payment_id: str = ""
+    subscription_id: str = ""
+    mandate_id: str = ""
+    customer_id: str
+    merchant_id: str
+    amount: int
+    currency: str = "INR"
+    method: str
+    instrument_id: str = ""
+    failure_code: str = ""
+    failure_reason: str = ""
+    next_billing_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    test_mode: bool = True
+
+
+class RecoveryEpisode(BaseModel):
+    """Stable correlation boundary for retry budgets and human review."""
+
+    id: str
+    scope_type: str
+    scope_id: str
+    external_payment_id: str = ""
+    order_id: str = ""
+    subscription_id: str = ""
+    mandate_id: str = ""
+    invoice_id: str = ""
+    customer_id: str
+    merchant_id: str
+    status: str = "OPEN"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class EscalationRecord(BaseModel):
+    """Durable, audit-first handoff; it never represents money movement."""
+
+    id: str = Field(default_factory=_new_id)
+    recovery_episode_id: str
+    failure_id: str
+    decision_id: str
+    merchant_id: str
+    customer_id: str
+    amount: int
+    failure_reason: str
+    attempts_used: int
+    max_automated_attempts: int = 0
+    candidate_action: RecoveryAction
+    policy_result: PolicyResult
+    escalation_reason: str
+    accepted_evidence_ids: list[str] = Field(default_factory=list)
+    rejected_evidence_ids: list[str] = Field(default_factory=list)
+    recommended_manual_next_step: str = "Manual review / customer outreach"
+    state: str = "PENDING"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    waggle_node_id: str | None = None
 
 
 class MandateContext(BaseModel):

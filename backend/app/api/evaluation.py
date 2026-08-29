@@ -5,6 +5,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -14,6 +15,7 @@ from app.main import get_db
 from app.persistence.database import Database
 
 router = APIRouter()
+REPORT_DIR = Path(__file__).resolve().parents[2] / "data" / "evaluations"
 
 
 @router.post("/run")
@@ -174,3 +176,26 @@ async def run_evaluation_sync(
     count = int(body.get("count", 20))  # Keep small for sync
     summary = run_evaluation(seed=seed, scenario_count=min(count, 50), settings=settings)
     return summary.to_dict()
+
+
+@router.get("/reports")
+async def evaluation_reports() -> dict[str, Any]:
+    """Return cached, separately labeled evaluation reports; never trigger spend."""
+    reports: dict[str, Any] = {}
+    for key, filename in {
+        "robustness": "robustness.json",
+        "ablations": "ablations.json",
+        "qwen": "qwen.json",
+    }.items():
+        path = REPORT_DIR / filename
+        if not path.exists():
+            reports[key] = {
+                "status": "not_run",
+                "message": "No cached report is available. This evaluation is not run automatically.",
+            }
+            continue
+        try:
+            reports[key] = {"status": "completed", "report": json.loads(path.read_text(encoding="utf-8"))}
+        except (OSError, json.JSONDecodeError):
+            reports[key] = {"status": "invalid_cache", "message": "Cached report could not be read."}
+    return {"reports": reports}

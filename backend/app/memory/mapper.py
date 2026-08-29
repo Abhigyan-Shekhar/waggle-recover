@@ -72,10 +72,12 @@ def outcome_content(outcome_data: dict[str, Any]) -> str:
 
 def policy_content(policy_data: dict[str, Any]) -> str:
     return (
-        f"Merchant policy for {policy_data.get('merchant_id', '?')}: "
+        f"Merchant policy {policy_data.get('policy_id', '?')} "
+        f"version {policy_data.get('version', 1)} for {policy_data.get('merchant_id', '?')}: "
         f"max_attempts={policy_data.get('max_recovery_attempts', 3)}, "
         f"min_interval={policy_data.get('min_retry_interval_seconds', 300)}s, "
         f"max_interval={policy_data.get('max_retry_interval_seconds', 3600)}s. "
+        f"Allowed actions: {policy_data.get('allowed_actions', [])}. "
         f"Blocked methods: {policy_data.get('blocked_methods', [])}."
     )
 
@@ -167,6 +169,8 @@ def policy_tags(policy_data: dict[str, Any]) -> list[str]:
     return [
         "merchant_policy",
         f"merchant:{policy_data.get('merchant_id', '')}",
+        f"policy:{policy_data.get('policy_id', '')}",
+        f"policy_version:{policy_data.get('version', 1)}",
     ]
 
 
@@ -186,6 +190,7 @@ def failure_metadata(failure_data: dict[str, Any]) -> dict[str, Any]:
         "failure_code": failure_data.get("failure_code", ""),
         "failure_class": failure_data.get("failure_class", "UNKNOWN"),
         "occurred_at": failure_data.get("occurred_at", ""),
+        "recovery_episode_id": failure_data.get("recovery_episode_id", ""),
     }
 
 
@@ -206,6 +211,14 @@ def decision_metadata(dec_data: dict[str, Any]) -> dict[str, Any]:
         "failure_id": dec_data.get("failure_id", ""),
         "action": dec_data.get("action", ""),
         "confidence": dec_data.get("confidence", 0.0),
+        "evidence_confidence": dec_data.get("evidence_confidence", 0.0),
+        "evidence_quality": dec_data.get("evidence_quality", "UNKNOWN"),
+        "uncertainty_reason": dec_data.get("uncertainty_reason", ""),
+        "abstention_reason": dec_data.get("abstention_reason", ""),
+        "risk_score": dec_data.get("risk_score", 0),
+        "risk_band": dec_data.get("risk_band", "LOW"),
+        "risk_factors": dec_data.get("risk_factors", []),
+        "recovery_episode_id": dec_data.get("recovery_episode_id", ""),
         "memory_contribution": dec_data.get("memory_contribution", "NONE"),
         "retry_after_seconds": dec_data.get("retry_after_seconds"),
         "recommended_method": dec_data.get("recommended_method"),
@@ -233,6 +246,7 @@ def outcome_metadata(outcome_data: dict[str, Any]) -> dict[str, Any]:
         "instrument_id": outcome_data.get("instrument_id", ""),
         "failure_code": outcome_data.get("failure_code", ""),
         "executed_at": outcome_data.get("executed_at", ""),
+        "recovery_episode_id": outcome_data.get("recovery_episode_id", ""),
     }
 
 

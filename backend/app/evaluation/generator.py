@@ -13,7 +13,7 @@ Generates 200+ deterministic scenarios across categories:
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -62,9 +62,50 @@ class EvalScenario:
 
     # Instrument chain
     instruments: list[dict[str, Any]] = field(default_factory=list)
+    # Optional temporal policy fixtures used only by robustness/curated tests.
+    # The main seeded 200-case benchmark leaves this empty and is unchanged.
+    merchant_policies: list[dict[str, Any]] = field(default_factory=list)
 
     seed: int = 42
     current_payment_id: str | None = None
+
+
+def isolate_demo_run(scenario: EvalScenario, run_token: str) -> EvalScenario:
+    """Namespace every stateful scope so repeated demos cannot share evidence."""
+    customer_ids = {item.customer_id for item in scenario.history} | {scenario.customer_id}
+    customer_map = {customer_id: f"{customer_id}-D{run_token}" for customer_id in customer_ids}
+    merchant_ids = {item.merchant_id for item in scenario.history} | {scenario.merchant_id}
+    merchant_map = {merchant_id: f"{merchant_id}-D{run_token}" for merchant_id in merchant_ids}
+    payment_ids = {item.payment_id for item in scenario.history if item.payment_id}
+    if scenario.current_payment_id:
+        payment_ids.add(scenario.current_payment_id)
+    payment_map = {payment_id: f"{payment_id}-{run_token}" for payment_id in payment_ids}
+
+    return replace(
+        scenario,
+        customer_id=customer_map[scenario.customer_id],
+        merchant_id=merchant_map[scenario.merchant_id],
+        current_payment_id=payment_map.get(scenario.current_payment_id) if scenario.current_payment_id else None,
+        history=[
+            replace(
+                item,
+                customer_id=customer_map[item.customer_id],
+                merchant_id=merchant_map[item.merchant_id],
+                payment_id=payment_map.get(item.payment_id, item.payment_id),
+            )
+            for item in scenario.history
+        ],
+        merchant_policies=[
+            {
+                **policy,
+                "merchant_id": merchant_map.get(
+                    str(policy.get("merchant_id") or scenario.merchant_id),
+                    merchant_map[scenario.merchant_id],
+                ),
+            }
+            for policy in scenario.merchant_policies
+        ],
+    )
 
 
 # ── Category constants ─────────────────────────────────────────────────────
@@ -284,20 +325,6 @@ class ScenarioGenerator:
             failure_reason="Issuer temporarily unavailable",
             history=[
                 ScenarioHistory(
-                    event_type="failure", payment_id="pay_hist_003a",
-                    customer_id="CUST-1042", merchant_id="MERCH-001",
-                    amount=5000_00, method="card", instrument_id="card_1234",
-                    failure_code="issuer_unavailable", outcome="FAILURE",
-                    timestamp=_ts(16),
-                ),
-                ScenarioHistory(
-                    event_type="success", payment_id="pay_hist_003b",
-                    customer_id="CUST-1042", merchant_id="MERCH-001",
-                    amount=5000_00, method="card", instrument_id="card_1234",
-                    outcome="SUCCESS", action_taken="RETRY_AFTER",
-                    retry_after_seconds=480, timestamp=_ts(16, hours_ago=-0.14),
-                ),
-                ScenarioHistory(
                     event_type="failure", payment_id="pay_hist_003c",
                     customer_id="CUST-1042", merchant_id="MERCH-001",
                     amount=6000_00, method="card", instrument_id="card_1234",
@@ -309,7 +336,7 @@ class ScenarioGenerator:
                     customer_id="CUST-1042", merchant_id="MERCH-001",
                     amount=6000_00, method="card", instrument_id="card_1234",
                     outcome="SUCCESS", action_taken="RETRY_AFTER",
-                    retry_after_seconds=600, timestamp=_ts(9, hours_ago=-0.17),
+                    retry_after_seconds=480, timestamp=_ts(9, hours_ago=-0.14),
                 ),
                 # card_9988 added, supersedes card_1234
                 ScenarioHistory(

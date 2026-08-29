@@ -27,6 +27,7 @@ class PolicyValidationResult:
     checks: list[PolicyCheck]
     modified_action: RecoveryAction | None = None
     modified_retry_seconds: int | None = None
+    modified_recommended_method: str | None = None
     block_reason: str = ""
     notes: list[str] = None
 
@@ -73,6 +74,14 @@ class PolicyEngine:
         block_reason = ""
         modifications: dict = {}
 
+        if decision.action == RecoveryAction.ESCALATE:
+            reason = decision.abstention_reason or "Human review required"
+            return PolicyValidationResult(
+                result=PolicyResult.BLOCK,
+                checks=[PolicyCheck("human_review", False, reason)],
+                block_reason=reason,
+            )
+
         # 1. Check max recovery attempts
         max_attempts_check = self._check_max_attempts(retry_count, policy)
         checks.append(max_attempts_check)
@@ -92,6 +101,15 @@ class PolicyEngine:
             alt = self._find_allowed_alternative(decision.action, policy)
             if alt:
                 modifications["action"] = alt
+                if alt == RecoveryAction.SUGGEST_METHOD:
+                    safe_method = self._find_allowed_method(policy)
+                    if safe_method is None:
+                        return PolicyValidationResult(
+                            result=PolicyResult.BLOCK,
+                            checks=checks,
+                            block_reason="No safe allowed payment method remains",
+                        )
+                    modifications["recommended_method"] = safe_method
                 checks.append(PolicyCheck("action_substitution", True, f"Substituted {alt}"))
             else:
                 block_reason = f"Action {decision.action} not in allowed set and no substitute available"
@@ -102,11 +120,12 @@ class PolicyEngine:
                 )
 
         # 3. Check method not blocked
-        if decision.recommended_method:
-            method_check = self._check_method_allowed(decision.recommended_method, policy)
+        effective_method = modifications.get("recommended_method", decision.recommended_method)
+        if effective_method:
+            method_check = self._check_method_allowed(effective_method, policy)
             checks.append(method_check)
             if not method_check.passed:
-                block_reason = f"Recommended method {decision.recommended_method} is blocked"
+                block_reason = f"Recommended method {effective_method} is blocked"
                 return PolicyValidationResult(
                     result=PolicyResult.BLOCK,
                     checks=checks,
@@ -167,6 +186,7 @@ class PolicyEngine:
                 checks=checks,
                 modified_action=modifications.get("action"),
                 modified_retry_seconds=modifications.get("retry_after_seconds"),
+                modified_recommended_method=modifications.get("recommended_method"),
             )
 
         return PolicyValidationResult(
@@ -261,3 +281,7 @@ class PolicyEngine:
             if action != blocked_action and policy.allows_action(action):
                 return action
         return None
+
+    @staticmethod
+    def _find_allowed_method(policy: MerchantPolicy) -> str | None:
+        return next((method for method in ("upi", "netbanking", "wallet", "card") if policy.allows_method(method)), None)

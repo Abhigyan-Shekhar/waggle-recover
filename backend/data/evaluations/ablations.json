@@ -1,0 +1,50 @@
+{
+  "evaluation": "Temporal Authority Ablation",
+  "finding": "Retrieval provides context; temporal validation prevents superseded evidence from driving actions.",
+  "mode": "deterministic_evaluation",
+  "scenario_count": 200,
+  "seed": 42,
+  "systems": {
+    "blind_retry": {
+      "action_accuracy": 0.43,
+      "average_latency_ms": 0.01,
+      "name": "Blind Retry",
+      "scenario_count": 200,
+      "simulated_gmv_recovery": 0.4796,
+      "stale_evidence_rejection_rate": 0.0,
+      "stale_evidence_usage_rate": 0.0,
+      "unsafe_action_rate": 0.085
+    },
+    "contextual_history": {
+      "action_accuracy": 0.76,
+      "average_latency_ms": 0.01,
+      "name": "Contextual History",
+      "scenario_count": 200,
+      "simulated_gmv_recovery": 0.7692,
+      "stale_evidence_rejection_rate": 0.0,
+      "stale_evidence_usage_rate": 0.0455,
+      "unsafe_action_rate": 0.005
+    },
+    "waggle_with_temporal_validation": {
+      "action_accuracy": 1.0,
+      "average_latency_ms": 6.4,
+      "name": "Waggle Recover WITH temporal validation",
+      "scenario_count": 200,
+      "simulated_gmv_recovery": 0.8692,
+      "stale_evidence_rejection_rate": 1.0,
+      "stale_evidence_usage_rate": 0.0,
+      "unsafe_action_rate": 0.0
+    },
+    "waggle_without_temporal_validation": {
+      "action_accuracy": 0.76,
+      "average_latency_ms": 0.0,
+      "name": "Waggle retrieval WITHOUT temporal validation",
+      "scenario_count": 200,
+      "simulated_gmv_recovery": 0.7692,
+      "stale_evidence_rejection_rate": 0.0,
+      "stale_evidence_usage_rate": 0.0455,
+      "unsafe_action_rate": 0.005
+    }
+  },
+  "unsafe_action_definition": "Use of known stale evidence, or retrying the same method for a permanent/instrument failure."
+}

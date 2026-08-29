@@ -5,8 +5,8 @@ import pytest
 from datetime import UTC, datetime
 
 from waggle.embeddings import EmbeddingModel
-from app.domain.models import MerchantPolicy, NormalizedPaymentEvent, PaymentInstrument
-from app.domain.enums import OutcomeStatus, RecoveryAction
+from app.domain.models import EvidenceBundle, EvidenceReference, MerchantPolicy, NormalizedPaymentEvent, PaymentFailure, PaymentInstrument, RecoveryDecision
+from app.domain.enums import OutcomeStatus, RecoveryAction, TemporalStatus
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
 from app.recovery.orchestrator import RecoveryOrchestrator
@@ -95,6 +95,44 @@ class TestOrchestratorBasic:
 
 
 class TestPolicyEnforcement:
+    def test_superseded_merchant_policy_remains_audit_only(self, tmp_setup):
+        orchestrator, adapter, _ = tmp_setup
+        old_policy = MerchantPolicy(
+            merchant_id="MERCH-POLICY-CHANGE",
+            version=1,
+            min_retry_interval_seconds=300,
+            allowed_actions=[RecoveryAction.RETRY_AFTER, RecoveryAction.STOP],
+        )
+        old_node = adapter.store_merchant_policy(old_policy)
+        new_policy = MerchantPolicy(
+            merchant_id=old_policy.merchant_id,
+            version=2,
+            supersedes_policy_id=old_policy.policy_id,
+            min_retry_interval_seconds=900,
+            allowed_actions=[RecoveryAction.SUGGEST_METHOD, RecoveryAction.STOP],
+            blocked_methods=["card"],
+        )
+        new_node = adapter.store_merchant_policy(new_policy)
+
+        loaded = orchestrator._load_merchant_policy(old_policy.merchant_id)
+        assert loaded.policy_id == new_policy.policy_id
+        assert loaded.version == 2
+        assert adapter.get_node(old_node)["valid_to"] is not None
+
+        result = orchestrator.process_event(
+            event=_make_event(
+                merchant_id=old_policy.merchant_id,
+                payment_id="pay_policy_changed",
+                instrument_id="card_policy_old",
+            ),
+            simulate=True,
+        )
+        assert result["decision"]["action"] == "SUGGEST_METHOD"
+        assert result["decision"]["recommended_method"] == "upi"
+        graph = adapter.get_nodes_and_edges_for_decision(result["decision_waggle_node"])
+        graph_ids = {node["id"] for node in graph["nodes"]}
+        assert {old_node, new_node}.issubset(graph_ids)
+
     def test_curated_escalation_case_persists_handoff_and_graph_metadata(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup
         from app.evaluation.generator import ScenarioGenerator
@@ -128,6 +166,12 @@ class TestPolicyEnforcement:
         decision_node = next(node for node in graph["nodes"] if node["id"] == result["decision_waggle_node"])
         assert decision_node["metadata"]["human_review_required"] is True
         assert decision_node["metadata"]["policy_result"] == "BLOCK"
+        escalation_nodes = [node for node in graph["nodes"] if "escalation_record" in node.get("tags", [])]
+        assert len(escalation_nodes) == 1
+        assert escalation_nodes[0]["metadata"]["money_movement"] == "NONE"
+        persisted = db.get_escalations("PENDING")
+        assert len(persisted) == 1
+        assert persisted[0]["recovery_episode_id"] == result["recovery_episode"]["id"]
 
     def test_independent_failures_do_not_share_retry_budget(self, tmp_setup):
         orchestrator, _, _ = tmp_setup
@@ -195,6 +239,112 @@ class TestPolicyEnforcement:
         assert escalation["policy_result"] == "BLOCK"
         assert escalation["money_movement"] == "NONE"
         assert escalation["recommended_next_step"] == "Manual review / customer outreach"
+
+    def test_different_payments_in_same_order_share_episode_budget(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+        policy = MerchantPolicy(
+            merchant_id="MERCH-ORDER-EPISODE",
+            max_recovery_attempts=2,
+            allowed_actions=list(RecoveryAction),
+        )
+        results = []
+        for payment_id in ("pay_order_attempt_1", "pay_order_attempt_2", "pay_order_attempt_3"):
+            results.append(orchestrator.process_event(
+                event=_make_event(
+                    payment_id=payment_id,
+                    order_id="order_shared_recovery",
+                    customer_id="CUST-ORDER-EPISODE",
+                    merchant_id=policy.merchant_id,
+                ),
+                merchant_policy=policy,
+                simulation_outcomes={"RETRY_AFTER": "FAILURE", "STOP": "SKIPPED"},
+                simulate=True,
+            ))
+
+        assert len({item["recovery_episode"]["id"] for item in results}) == 1
+        assert [item["metrics"]["attempt_count_for_current_failure"] for item in results] == [0, 1, 2]
+        assert results[-1]["decision"]["action"] == "ESCALATE"
+
+    def test_merchant_review_policy_forces_auditable_abstention(self, tmp_setup):
+        orchestrator, _, db = tmp_setup
+        policy = MerchantPolicy(
+            merchant_id="MERCH-REVIEW",
+            requires_human_review=True,
+            allowed_actions=list(RecoveryAction),
+        )
+        result = orchestrator.process_event(
+            event=_make_event(merchant_id=policy.merchant_id, payment_id="pay_review_required"),
+            merchant_policy=policy,
+            simulate=True,
+        )
+
+        assert result["decision"]["action"] == "ESCALATE"
+        assert result["decision"]["abstention_reason"] == "Merchant policy requires human review"
+        assert result["outcome"]["recovered_amount"] == 0
+        assert db.get_escalations("PENDING")
+
+    def test_low_confidence_policy_forces_review(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+        policy = MerchantPolicy(
+            merchant_id="MERCH-CONFIDENCE",
+            requires_human_review_below_confidence=True,
+            min_automatic_confidence=0.95,
+            allowed_actions=list(RecoveryAction),
+        )
+        result = orchestrator.process_event(
+            event=_make_event(merchant_id=policy.merchant_id, payment_id="pay_low_confidence"),
+            merchant_policy=policy,
+            simulate=True,
+        )
+        assert result["decision"]["action"] == "ESCALATE"
+        assert "below merchant threshold" in result["decision"]["abstention_reason"]
+        assert result["outcome"]["recovered_amount"] == 0
+
+    def test_no_safe_allowed_action_escalates(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+        policy = MerchantPolicy(merchant_id="MERCH-NO-SAFE", allowed_actions=[])
+        result = orchestrator.process_event(
+            event=_make_event(merchant_id=policy.merchant_id, payment_id="pay_no_safe"),
+            merchant_policy=policy,
+            simulate=True,
+        )
+        assert result["decision"]["action"] == "ESCALATE"
+        assert result["decision"]["policy_result"] == "BLOCK"
+        assert result["outcome"]["outcome"] == "SKIPPED"
+
+    def test_materially_conflicting_evidence_forces_abstention(self):
+        failure = PaymentFailure(
+            external_payment_id="pay_conflict",
+            customer_id="CUST-CONFLICT",
+            merchant_id="MERCH-CONFLICT",
+            amount=100000,
+            method="card",
+            instrument_id="card_conflict",
+            failure_code="issuer_unavailable",
+        )
+        bundle = EvidenceBundle(
+            current_failure=failure,
+            discarded_evidence=[EvidenceReference(
+                waggle_node_id="conflicting-memory",
+                label="Contradictory exact outcomes",
+                memory_type="recovery_outcome",
+                temporal_status=TemporalStatus.CONFLICTING,
+                accepted=False,
+            )],
+        )
+        decision = RecoveryDecision(
+            failure_id=failure.id,
+            action=RecoveryAction.RETRY_AFTER,
+            retry_after_seconds=600,
+            confidence=0.9,
+        )
+        RecoveryOrchestrator._annotate_confidence(
+            decision,
+            bundle,
+            MerchantPolicy(merchant_id=failure.merchant_id),
+        )
+        assert decision.action == RecoveryAction.ESCALATE
+        assert decision.abstention_reason == "Authoritative evidence is materially conflicting"
 
     def test_exceeding_max_attempts_stops(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup
@@ -287,6 +437,51 @@ class TestStaleTrapScenario:
     Current failure is on card_new.
     System should not blindly replay card_old timing.
     """
+
+    def test_curated_hero_rejects_the_only_old_eight_minute_success(self, tmp_setup):
+        """The exact demo fixture must visibly prove rejection, not just validator capability."""
+        orchestrator, adapter, db = tmp_setup
+        from app.evaluation.generator import ScenarioGenerator, isolate_demo_run
+        from app.evaluation.runner import _populate_memory
+
+        fixture = next(
+            item for item in ScenarioGenerator(seed=42)._curated_scenarios()
+            if item.id == "curated_003"
+        )
+        scenario = isolate_demo_run(fixture, "hero")
+        assert scenario.customer_id.endswith("-Dhero")
+        assert scenario.merchant_id.endswith("-Dhero")
+        assert all(item.merchant_id == scenario.merchant_id for item in scenario.history)
+        _populate_memory(adapter, db, orchestrator, scenario)
+        result = orchestrator.process_event(
+            event=NormalizedPaymentEvent(
+                event_type="payment.failed",
+                payment_id="pay_curated_stale_current",
+                customer_id=scenario.customer_id,
+                merchant_id=scenario.merchant_id,
+                amount=scenario.amount,
+                method=scenario.method,
+                instrument_id=scenario.instrument_id,
+                error_code=scenario.failure_code,
+                error_description=scenario.failure_reason,
+                created_at=datetime.now(UTC),
+                source="simulator",
+            ),
+            simulation_outcomes=scenario.action_outcomes,
+            simulate=True,
+        )
+
+        assert result["decision"]["action"] == "SUGGEST_METHOD"
+        assert result["decision"]["recommended_method"] == "upi"
+        assert result["metrics"]["evidence_accepted"] == 0
+        rejected = [
+            item for item in result["audit"]["discarded_evidence"]
+            if item["memory_type"] == "recovery_outcome"
+        ]
+        assert len(rejected) == 1
+        rejected_node = adapter.get_node(rejected[0]["node_id"])
+        assert rejected_node["metadata"]["retry_after_seconds"] == 480
+        assert "superseded" in rejected[0]["rejection_reason"].lower()
 
     def test_stale_card_trap_complete_flow(self, tmp_setup):
         orchestrator, adapter, db = tmp_setup

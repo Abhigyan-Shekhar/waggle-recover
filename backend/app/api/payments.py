@@ -21,7 +21,7 @@ async def list_recoveries(
     rows = db.get_all_recoveries(limit=limit)
     # Parse JSON fields
     for row in rows:
-        for field in ("evidence_json", "discarded_json"):
+        for field in ("evidence_json", "discarded_json", "risk_factors_json"):
             if field in row and row[field]:
                 try:
                     row[field] = json.loads(row[field])
@@ -45,7 +45,7 @@ async def get_recovery(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Failure not found")
 
-    for field in ("evidence_json", "discarded_json"):
+    for field in ("evidence_json", "discarded_json", "risk_factors_json"):
         if field in row and row[field]:
             try:
                 row[field] = json.loads(row[field])

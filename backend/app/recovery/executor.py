@@ -29,6 +29,7 @@ class RecoveryExecutor:
         method: str = "",
         instrument_id: str = "",
         failure_code: str = "",
+        recovery_episode_id: str = "",
         simulate: bool = True,
         simulation_outcomes: dict[str, Any] | None = None,
     ) -> RecoveryAttempt:
@@ -53,6 +54,7 @@ class RecoveryExecutor:
             method=method,
             instrument_id=instrument_id,
             failure_code=failure_code,
+            recovery_episode_id=recovery_episode_id,
         )
 
         if simulate:

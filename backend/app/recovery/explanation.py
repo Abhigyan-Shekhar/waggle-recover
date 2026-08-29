@@ -96,6 +96,11 @@ def build_explanation(
     if decision.recommended_method:
         lines.append(f"  Recommended method: {decision.recommended_method}")
     lines.append(f"  Confidence: {decision.confidence:.0%}")
+    lines.append(f"  Evidence confidence: {decision.evidence_confidence:.0%} ({decision.evidence_quality})")
+    if decision.uncertainty_reason:
+        lines.append(f"  Uncertainty: {decision.uncertainty_reason}")
+    if decision.abstention_reason:
+        lines.append(f"  Abstention: {decision.abstention_reason}")
     lines.append(f"  Reason: {decision.reason}")
     if decision.human_review_required:
         lines.append("")
@@ -171,6 +176,11 @@ def build_structured_audit(
             "retry_after_seconds": decision.retry_after_seconds,
             "recommended_method": decision.recommended_method,
             "confidence": decision.confidence,
+            "evidence_confidence": decision.evidence_confidence,
+            "evidence_quality": decision.evidence_quality,
+            "uncertainty_reason": decision.uncertainty_reason,
+            "abstention_reason": decision.abstention_reason,
+            "recovery_episode_id": decision.recovery_episode_id,
             "reason": decision.reason,
             "memory_contribution": decision.memory_contribution,
             "human_review_required": decision.human_review_required,

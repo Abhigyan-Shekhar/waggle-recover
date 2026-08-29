@@ -8,6 +8,7 @@ from typing import Any
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS webhook_events (
     id TEXT PRIMARY KEY,
+    provider_event_id TEXT NOT NULL DEFAULT '',
     event_type TEXT NOT NULL,
     payment_id TEXT NOT NULL,
     raw_payload TEXT NOT NULL,
@@ -15,6 +16,23 @@ CREATE TABLE IF NOT EXISTS webhook_events (
     processed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     UNIQUE(event_type, payment_id)
+);
+
+CREATE TABLE IF NOT EXISTS recovery_episodes (
+    id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    external_payment_id TEXT DEFAULT '',
+    order_id TEXT DEFAULT '',
+    subscription_id TEXT DEFAULT '',
+    mandate_id TEXT DEFAULT '',
+    invoice_id TEXT DEFAULT '',
+    customer_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(merchant_id, customer_id, scope_type, scope_id)
 );
 
 CREATE TABLE IF NOT EXISTS payment_failures (
@@ -35,6 +53,7 @@ CREATE TABLE IF NOT EXISTS payment_failures (
     failure_class TEXT DEFAULT 'UNKNOWN',
     occurred_at TEXT NOT NULL,
     raw_event_id TEXT DEFAULT '',
+    recovery_episode_id TEXT DEFAULT '',
     waggle_node_id TEXT DEFAULT NULL,
     created_at TEXT NOT NULL
 );
@@ -47,6 +66,16 @@ CREATE TABLE IF NOT EXISTS recovery_decisions (
     recommended_method TEXT DEFAULT NULL,
     recommended_route TEXT DEFAULT NULL,
     confidence REAL DEFAULT 0.5,
+    evidence_confidence REAL DEFAULT 0,
+    evidence_quality TEXT DEFAULT 'UNKNOWN',
+    uncertainty_reason TEXT DEFAULT '',
+    abstention_reason TEXT DEFAULT '',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_band TEXT DEFAULT 'LOW',
+    risk_factors_json TEXT DEFAULT '[]',
+    decision_mode TEXT DEFAULT 'deterministic',
+    execution_mode TEXT DEFAULT 'simulation',
+    decision_latency_ms REAL DEFAULT 0,
     reason TEXT DEFAULT '',
     status TEXT DEFAULT 'pending',
     policy_result TEXT DEFAULT 'ALLOW',
@@ -61,6 +90,7 @@ CREATE TABLE IF NOT EXISTS recovery_decisions (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     max_automated_attempts INTEGER NOT NULL DEFAULT 0,
     last_safe_action TEXT DEFAULT NULL,
+    recovery_episode_id TEXT DEFAULT '',
     waggle_node_id TEXT DEFAULT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (failure_id) REFERENCES payment_failures(id)
@@ -80,8 +110,32 @@ CREATE TABLE IF NOT EXISTS recovery_attempts (
     outcome TEXT DEFAULT 'PENDING',
     recovered_amount INTEGER DEFAULT 0,
     failure_reason_if_any TEXT DEFAULT '',
+    recovery_episode_id TEXT DEFAULT '',
     waggle_outcome_node_id TEXT DEFAULT NULL,
     FOREIGN KEY (failure_id) REFERENCES payment_failures(id)
+);
+
+CREATE TABLE IF NOT EXISTS escalation_records (
+    id TEXT PRIMARY KEY,
+    recovery_episode_id TEXT NOT NULL,
+    failure_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    failure_reason TEXT DEFAULT '',
+    attempts_used INTEGER NOT NULL DEFAULT 0,
+    max_automated_attempts INTEGER NOT NULL DEFAULT 0,
+    candidate_action TEXT NOT NULL,
+    policy_result TEXT NOT NULL,
+    escalation_reason TEXT NOT NULL,
+    accepted_evidence_json TEXT DEFAULT '[]',
+    rejected_evidence_json TEXT DEFAULT '[]',
+    recommended_manual_next_step TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'PENDING',
+    waggle_node_id TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (recovery_episode_id) REFERENCES recovery_episodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS payment_instruments (
@@ -134,6 +188,7 @@ CREATE INDEX IF NOT EXISTS idx_attempts_failure ON recovery_attempts(failure_id)
 CREATE INDEX IF NOT EXISTS idx_instruments_customer ON payment_instruments(customer_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_run ON evaluation_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_webhook_payment ON webhook_events(payment_id);
+CREATE INDEX IF NOT EXISTS idx_escalation_episode ON escalation_records(recovery_episode_id);
 """
 
 
@@ -163,10 +218,37 @@ class Database:
                 "attempt_count": "INTEGER NOT NULL DEFAULT 0",
                 "max_automated_attempts": "INTEGER NOT NULL DEFAULT 0",
                 "last_safe_action": "TEXT DEFAULT NULL",
+                "evidence_confidence": "REAL DEFAULT 0",
+                "evidence_quality": "TEXT DEFAULT 'UNKNOWN'",
+                "uncertainty_reason": "TEXT DEFAULT ''",
+                "abstention_reason": "TEXT DEFAULT ''",
+                "recovery_episode_id": "TEXT DEFAULT ''",
+                "risk_score": "INTEGER NOT NULL DEFAULT 0",
+                "risk_band": "TEXT DEFAULT 'LOW'",
+                "risk_factors_json": "TEXT DEFAULT '[]'",
+                "decision_mode": "TEXT DEFAULT 'deterministic'",
+                "execution_mode": "TEXT DEFAULT 'simulation'",
+                "decision_latency_ms": "REAL DEFAULT 0",
             }
             for name, definition in additions.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE recovery_decisions ADD COLUMN {name} {definition}")
+            table_additions = {
+                "webhook_events": {"provider_event_id": "TEXT NOT NULL DEFAULT ''"},
+                "payment_failures": {"recovery_episode_id": "TEXT DEFAULT ''"},
+                "recovery_attempts": {"recovery_episode_id": "TEXT DEFAULT ''"},
+            }
+            for table, definitions in table_additions.items():
+                existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                for name, definition in definitions.items():
+                    if name not in existing:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_provider_event "
+                "ON webhook_events(provider_event_id) WHERE provider_event_id != ''"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_failure_episode ON payment_failures(recovery_episode_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_attempt_episode ON recovery_attempts(recovery_episode_id)")
 
     def clear_recovery_data(self) -> None:
         """Clear only this demo application's operational data.
@@ -177,7 +259,7 @@ class Database:
         with self._connect() as conn:
             for table in (
                 "evaluation_results", "evaluation_runs", "recovery_attempts",
-                "recovery_decisions", "payment_failures", "payment_instruments",
+                "escalation_records", "recovery_decisions", "payment_failures", "recovery_episodes", "payment_instruments",
                 "webhook_events",
             ):
                 conn.execute(f"DELETE FROM {table}")
@@ -207,11 +289,13 @@ class Database:
                     amount, currency, method, instrument_id, route,
                     failure_code, failure_reason, failure_source, failure_step,
                     failure_class, occurred_at, raw_event_id, waggle_node_id, created_at
+                    , recovery_episode_id
                 ) VALUES (
                     :id, :external_payment_id, :order_id, :customer_id, :merchant_id,
                     :amount, :currency, :method, :instrument_id, :route,
                     :failure_code, :failure_reason, :failure_source, :failure_step,
                     :failure_class, :occurred_at, :raw_event_id, :waggle_node_id, :created_at
+                    , :recovery_episode_id
                 )
                 ON CONFLICT(id) DO UPDATE SET waggle_node_id = excluded.waggle_node_id
                 """,
@@ -226,17 +310,23 @@ class Database:
                 INSERT INTO recovery_decisions (
                     id, failure_id, action, retry_after_seconds, recommended_method,
                     recommended_route, confidence, reason, status, policy_result,
+                    evidence_confidence, evidence_quality, uncertainty_reason, abstention_reason,
+                    risk_score, risk_band, risk_factors_json,
+                    decision_mode, execution_mode, decision_latency_ms,
                     policy_note, memory_contribution, retrieval_mode, evidence_json,
                     discarded_json, explanation, human_review_required,
                     escalation_reason, attempt_count, max_automated_attempts,
-                    last_safe_action, waggle_node_id, created_at
+                    last_safe_action, recovery_episode_id, waggle_node_id, created_at
                 ) VALUES (
                     :id, :failure_id, :action, :retry_after_seconds, :recommended_method,
                     :recommended_route, :confidence, :reason, :status, :policy_result,
+                    :evidence_confidence, :evidence_quality, :uncertainty_reason, :abstention_reason,
+                    :risk_score, :risk_band, :risk_factors_json,
+                    :decision_mode, :execution_mode, :decision_latency_ms,
                     :policy_note, :memory_contribution, :retrieval_mode, :evidence_json,
                     :discarded_json, :explanation, :human_review_required,
                     :escalation_reason, :attempt_count, :max_automated_attempts,
-                    :last_safe_action, :waggle_node_id, :created_at
+                    :last_safe_action, :recovery_episode_id, :waggle_node_id, :created_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
@@ -254,12 +344,12 @@ class Database:
                     id, failure_id, customer_id, merchant_id, action_type,
                     recommended_method, recommended_route, retry_after_seconds,
                     decision_id, executed_at, outcome, recovered_amount,
-                    failure_reason_if_any, waggle_outcome_node_id
+                    failure_reason_if_any, recovery_episode_id, waggle_outcome_node_id
                 ) VALUES (
                     :id, :failure_id, :customer_id, :merchant_id, :action_type,
                     :recommended_method, :recommended_route, :retry_after_seconds,
                     :decision_id, :executed_at, :outcome, :recovered_amount,
-                    :failure_reason_if_any, :waggle_outcome_node_id
+                    :failure_reason_if_any, :recovery_episode_id, :waggle_outcome_node_id
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     outcome = excluded.outcome,
@@ -289,6 +379,79 @@ class Database:
                 instrument,
             )
             conn.commit()
+
+    def upsert_recovery_episode(self, episode: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recovery_episodes (
+                    id, scope_type, scope_id, external_payment_id, order_id,
+                    subscription_id, mandate_id, invoice_id, customer_id,
+                    merchant_id, status, created_at, updated_at
+                ) VALUES (
+                    :id, :scope_type, :scope_id, :external_payment_id, :order_id,
+                    :subscription_id, :mandate_id, :invoice_id, :customer_id,
+                    :merchant_id, :status, :created_at, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    external_payment_id=excluded.external_payment_id,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                episode,
+            )
+            conn.commit()
+
+    def get_attempt_count_for_episode(self, recovery_episode_id: str) -> int:
+        row = self.execute_one(
+            "SELECT COUNT(*) AS cnt FROM recovery_attempts WHERE recovery_episode_id = ?",
+            (recovery_episode_id,),
+        )
+        return int(row["cnt"]) if row else 0
+
+    def get_last_attempt_action_for_episode(self, recovery_episode_id: str) -> str | None:
+        row = self.execute_one(
+            """
+            SELECT action_type FROM recovery_attempts
+            WHERE recovery_episode_id = ? AND action_type NOT IN ('STOP', 'ESCALATE')
+            ORDER BY executed_at DESC LIMIT 1
+            """,
+            (recovery_episode_id,),
+        )
+        return str(row["action_type"]) if row else None
+
+    def upsert_escalation(self, escalation: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO escalation_records (
+                    id, recovery_episode_id, failure_id, decision_id, merchant_id,
+                    customer_id, amount, failure_reason, attempts_used, max_automated_attempts, candidate_action,
+                    policy_result, escalation_reason, accepted_evidence_json,
+                    rejected_evidence_json, recommended_manual_next_step, state,
+                    waggle_node_id, created_at
+                ) VALUES (
+                    :id, :recovery_episode_id, :failure_id, :decision_id, :merchant_id,
+                    :customer_id, :amount, :failure_reason, :attempts_used, :max_automated_attempts, :candidate_action,
+                    :policy_result, :escalation_reason, :accepted_evidence_json,
+                    :rejected_evidence_json, :recommended_manual_next_step, :state,
+                    :waggle_node_id, :created_at
+                )
+                ON CONFLICT(id) DO UPDATE SET state=excluded.state, waggle_node_id=excluded.waggle_node_id
+                """,
+                escalation,
+            )
+            conn.commit()
+
+    def get_escalations(self, state: str | None = None) -> list[dict[str, Any]]:
+        if state:
+            rows = self.execute(
+                "SELECT * FROM escalation_records WHERE state=? ORDER BY created_at DESC",
+                (state,),
+            )
+        else:
+            rows = self.execute("SELECT * FROM escalation_records ORDER BY created_at DESC")
+        return [dict(row) for row in rows]
 
     def get_instruments_for_customer(self, customer_id: str) -> list[dict[str, Any]]:
         rows = self.execute(
@@ -394,8 +557,8 @@ class Database:
             try:
                 conn.execute(
                     """
-                    INSERT INTO webhook_events (id, event_type, payment_id, raw_payload, signature_valid, processed, created_at)
-                    VALUES (:id, :event_type, :payment_id, :raw_payload, :signature_valid, :processed, :created_at)
+                    INSERT INTO webhook_events (id, provider_event_id, event_type, payment_id, raw_payload, signature_valid, processed, created_at)
+                    VALUES (:id, :provider_event_id, :event_type, :payment_id, :raw_payload, :signature_valid, :processed, :created_at)
                     """,
                     event,
                 )
@@ -495,7 +658,10 @@ class Database:
         rows = self.execute(
             """
             SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
-                   rd.confidence, rd.reason, rd.status as decision_status,
+                   rd.confidence, rd.evidence_confidence, rd.evidence_quality,
+                   rd.uncertainty_reason, rd.abstention_reason,
+                   rd.risk_score, rd.risk_band, rd.risk_factors_json,
+                   rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    rd.policy_result, rd.human_review_required, rd.escalation_reason,
                    rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
@@ -514,7 +680,10 @@ class Database:
         row = self.execute_one(
             """
             SELECT pf.*, rd.action, rd.recommended_method, rd.retry_after_seconds,
-                   rd.confidence, rd.reason, rd.status as decision_status,
+                   rd.confidence, rd.evidence_confidence, rd.evidence_quality,
+                   rd.uncertainty_reason, rd.abstention_reason,
+                   rd.risk_score, rd.risk_band, rd.risk_factors_json,
+                   rd.reason, rd.status as decision_status,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    rd.policy_result, rd.human_review_required, rd.escalation_reason,
                    rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
@@ -540,6 +709,23 @@ class Database:
         policy_violations = self.execute_one(
             "SELECT COUNT(*) as cnt FROM recovery_decisions WHERE policy_result = 'BLOCK'"
         )
+        episodes = self.execute_one("SELECT COUNT(*) as cnt FROM recovery_episodes")
+        escalations = self.execute_one("SELECT COUNT(*) as cnt FROM escalation_records")
+        stopped = self.execute_one(
+            "SELECT COUNT(*) as cnt FROM recovery_decisions WHERE action IN ('STOP', 'ESCALATE')"
+        )
+        automatic = self.execute_one(
+            "SELECT COUNT(*) as cnt FROM recovery_attempts WHERE action_type NOT IN ('STOP', 'ESCALATE')"
+        )
+        qwen_modified = self.execute_one(
+            "SELECT COUNT(*) as cnt FROM recovery_decisions WHERE decision_mode = 'agent' AND policy_result = 'MODIFY'"
+        )
+        qwen_blocked = self.execute_one(
+            "SELECT COUNT(*) as cnt FROM recovery_decisions WHERE decision_mode = 'agent' AND policy_result = 'BLOCK'"
+        )
+        latency = self.execute_one(
+            "SELECT COALESCE(AVG(decision_latency_ms), 0) as avg FROM recovery_decisions"
+        )
 
         total_fail = total_failures["cnt"] if total_failures else 0
         amount_at_risk = total_amount_at_risk["total"] if total_amount_at_risk else 0
@@ -558,4 +744,23 @@ class Database:
             "recovery_rate_pct": round(rate, 1),
             "stale_evidence_prevented": stale,
             "policy_violations": violations,
+            "operational": {
+                "label": "Operational prototype metrics",
+                "mode_breakdown": [
+                    dict(row) for row in self.execute(
+                        "SELECT execution_mode as mode, COUNT(*) as total_risk_events "
+                        "FROM recovery_decisions GROUP BY execution_mode ORDER BY execution_mode"
+                    )
+                ],
+                "total_risk_events": total_fail,
+                "total_recovery_episodes": episodes["cnt"] if episodes else 0,
+                "automatic_recoveries": automatic["cnt"] if automatic else 0,
+                "escalations": escalations["cnt"] if escalations else 0,
+                "stopped_recoveries": stopped["cnt"] if stopped else 0,
+                "simulated_recovered_gmv": rec_amount,
+                "stale_memories_rejected": stale,
+                "qwen_proposals_modified_by_policy": qwen_modified["cnt"] if qwen_modified else 0,
+                "qwen_proposals_blocked_by_policy": qwen_blocked["cnt"] if qwen_blocked else 0,
+                "average_decision_latency_ms": round(float(latency["avg"] if latency else 0), 2),
+            },
         }

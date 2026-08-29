@@ -67,6 +67,11 @@ def normalize_razorpay_event(payload: dict[str, Any]) -> NormalizedPaymentEvent 
         created_at=created_at,
         raw_payload=payload,
         source="razorpay",
+        event_id=str(payload.get("id", "")),
+        test_mode=True,
+        subscription_id=str(notes.get("subscription_id", "")),
+        mandate_id=str(notes.get("mandate_id", "")),
+        invoice_id=str(notes.get("invoice_id", "")),
     )
 
 
@@ -76,7 +81,6 @@ def _extract_instrument_id(entity: dict[str, Any]) -> str:
 
     if method == "card":
         card = entity.get("card", {}) or {}
-        network = card.get("network", "")
         last4 = card.get("last4", "")
         if last4:
             return f"card_{last4}"

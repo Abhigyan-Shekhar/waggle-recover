@@ -22,6 +22,7 @@ from typing import Any
 from app.config import Settings, get_settings
 from app.domain.enums import OutcomeStatus, PolicyResult, RecoveryAction
 from app.domain.models import (
+    EscalationRecord,
     MerchantPolicy,
     NormalizedPaymentEvent,
     PaymentFailure,
@@ -34,9 +35,11 @@ from app.memory.supersession import SupersessionValidator
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
 from app.recovery.decision_engine import DecisionProvider, DeterministicDecisionProvider
+from app.recovery.episodes import recovery_episode_for
 from app.recovery.executor import RecoveryExecutor
 from app.recovery.explanation import build_explanation, build_structured_audit
 from app.recovery.policy import PolicyEngine
+from app.recovery.risk import assess_revenue_risk
 from app.recovery.strategy_priors import get_strategy_priors
 
 LOGGER = logging.getLogger(__name__)
@@ -108,17 +111,15 @@ class RecoveryOrchestrator:
         if event.event_type != "payment.failed":
             return {"status": "skipped", "reason": f"Unsupported event type: {event.event_type}"}
 
-        # 1. Build failure domain model
-        failure = self._build_failure(event)
+        # 1. Resolve a stable recovery episode before counting attempts.
+        episode = recovery_episode_for(event)
+        self.db.upsert_recovery_episode(episode.model_dump(mode="json"))
+        failure = self._build_failure(event, episode.id)
 
         # 2. Policy attempts are scoped to this payment failure. Recent
         # customer+merchant activity is separate telemetry and must never make
         # independent payments consume one another's retry budget.
-        retry_count = self.db.get_attempt_count_for_payment(
-            failure.external_payment_id,
-            failure.customer_id,
-            failure.merchant_id,
-        )
+        retry_count = self.db.get_attempt_count_for_episode(episode.id)
         recent_customer_merchant_activity = self.db.get_recent_customer_merchant_activity(
             failure.customer_id,
             failure.merchant_id,
@@ -152,6 +153,13 @@ class RecoveryOrchestrator:
         decision_start = time.time()
         active_provider = decision_provider or self.decision_provider
         candidate, decision_trace = active_provider.decide_with_trace(bundle)
+        provider_candidate_action = candidate.action
+        candidate.recovery_episode_id = episode.id
+        self._annotate_confidence(candidate, bundle, policy)
+        risk_assessment = assess_revenue_risk(bundle)
+        candidate.risk_score = risk_assessment.score
+        candidate.risk_band = risk_assessment.band
+        candidate.risk_factors = risk_assessment.factors
         candidate.strategy_priors = bundle.strategy_priors
         decision_latency_ms = (time.time() - decision_start) * 1000
 
@@ -164,7 +172,7 @@ class RecoveryOrchestrator:
         )
 
         # Apply policy modifications
-        candidate_action = candidate.action
+        candidate_action = provider_candidate_action
         final_decision = self._apply_policy(candidate, policy_result)
         final_decision.policy_result = policy_result.result
         final_decision.policy_note = policy_result.formatted()
@@ -175,9 +183,7 @@ class RecoveryOrchestrator:
             final_decision.max_automated_attempts = policy.max_recovery_attempts
             last_action = candidate_action
             if last_action in (RecoveryAction.STOP, RecoveryAction.ESCALATE):
-                persisted_action = self.db.get_last_attempt_action_for_payment(
-                    failure.external_payment_id, failure.customer_id, failure.merchant_id
-                )
+                persisted_action = self.db.get_last_attempt_action_for_episode(episode.id)
                 if persisted_action:
                     last_action = RecoveryAction(persisted_action)
             final_decision.last_safe_action = last_action
@@ -218,6 +224,27 @@ class RecoveryOrchestrator:
             merchant_id=failure.merchant_id,
         )
         final_decision.waggle_node_id = dec_node_id
+        current_policy_node = self.adapter.get_merchant_policy_node(failure.merchant_id)
+        if current_policy_node:
+            self.adapter.link_nodes(
+                dec_node_id,
+                current_policy_node["id"],
+                "depends_on",
+                {"relation": "current_merchant_policy", "validation_status": "accepted", "authoritative": True},
+            )
+
+        escalation_record = None
+        if final_decision.human_review_required:
+            escalation_record = self._build_escalation_record(bundle, final_decision, candidate_action)
+            escalation_record.waggle_node_id = self.adapter.store_escalation_record(
+                escalation_record,
+                decision_node_id=dec_node_id,
+                failure_node_id=waggle_node_id,
+            )
+            escalation_dict = escalation_record.model_dump(mode="json")
+            escalation_dict["accepted_evidence_json"] = json.dumps(escalation_record.accepted_evidence_ids)
+            escalation_dict["rejected_evidence_json"] = json.dumps(escalation_record.rejected_evidence_ids)
+            self.db.upsert_escalation(escalation_dict)
 
         dec_dict = final_decision.model_dump(mode="json")
         dec_dict["evidence_json"] = json.dumps([r.model_dump(mode="json") for r in bundle.accepted_evidence])
@@ -225,6 +252,12 @@ class RecoveryOrchestrator:
         dec_dict["retrieval_mode"] = bundle.retrieval_mode
         dec_dict["waggle_node_id"] = dec_node_id
         dec_dict["created_at"] = datetime.now(UTC).isoformat()
+        dec_dict["risk_factors_json"] = json.dumps(final_decision.risk_factors)
+        dec_dict["decision_mode"] = decision_trace.get("decision_mode", "deterministic")
+        dec_dict["execution_mode"] = "simulation" if simulate else (
+            "live_agent" if decision_trace.get("decision_mode") == "agent" else "live_recommendation"
+        )
+        dec_dict["decision_latency_ms"] = round(decision_latency_ms, 2)
         self.db.upsert_decision(dec_dict)
 
         # 11. Execute/simulate the action
@@ -237,6 +270,7 @@ class RecoveryOrchestrator:
             method=failure.method,
             instrument_id=failure.instrument_id,
             failure_code=failure.failure_code,
+            recovery_episode_id=episode.id,
             simulate=simulate,
             simulation_outcomes=simulation_outcomes,
         )
@@ -261,6 +295,7 @@ class RecoveryOrchestrator:
 
         # 14. Build audit record
         audit = build_structured_audit(bundle, final_decision, policy_result)
+        audit["risk_assessment"] = risk_assessment.to_dict()
         audit["strategy_adaptation"] = self._strategy_adaptation_audit(bundle)
         if decision_trace.get("decision_mode") == "agent":
             audit["agent_trace"] = decision_trace
@@ -277,7 +312,9 @@ class RecoveryOrchestrator:
             "decision_mode": decision_trace.get("decision_mode", "deterministic"),
             "agent_trace": decision_trace if decision_trace.get("decision_mode") == "agent" else None,
             "strategy_priors": [item.model_dump(mode="json") for item in bundle.strategy_priors],
-            "escalation": self._escalation_payload(bundle, final_decision) if final_decision.human_review_required else None,
+            "risk_assessment": risk_assessment.to_dict(),
+            "recovery_episode": episode.model_dump(mode="json"),
+            "escalation": self._escalation_payload(escalation_record) if escalation_record else None,
             "metrics": {
                 "total_latency_ms": round(total_latency_ms, 2),
                 "decision_latency_ms": round(decision_latency_ms, 2),
@@ -349,6 +386,7 @@ class RecoveryOrchestrator:
                 method=row.get("failure_method", ""),
                 instrument_id=row.get("failure_instrument_id", ""),
                 failure_code=row.get("failure_code", ""),
+                recovery_episode_id=row.get("recovery_episode_id", ""),
             )
             outcome_node_id = self.adapter.store_recovery_outcome(
                 attempt=attempt,
@@ -366,7 +404,7 @@ class RecoveryOrchestrator:
             "outcome_waggle_nodes": outcome_nodes,
         }
 
-    def _build_failure(self, event: NormalizedPaymentEvent) -> PaymentFailure:
+    def _build_failure(self, event: NormalizedPaymentEvent, recovery_episode_id: str) -> PaymentFailure:
         return PaymentFailure(
             external_payment_id=event.payment_id,
             order_id=event.order_id,
@@ -382,7 +420,8 @@ class RecoveryOrchestrator:
             failure_source=event.error_source,
             failure_step=event.error_step,
             occurred_at=event.created_at,
-            raw_event_id=event.payment_id,
+            raw_event_id=event.event_id or event.payment_id,
+            recovery_episode_id=recovery_episode_id,
         )
 
     def _load_merchant_policy(self, merchant_id: str) -> MerchantPolicy:
@@ -392,13 +431,21 @@ class RecoveryOrchestrator:
             meta = node.get("metadata", {})
             try:
                 return MerchantPolicy(
+                    policy_id=meta.get("policy_id", "") or meta.get("id", "") or MerchantPolicy(merchant_id=merchant_id).policy_id,
                     merchant_id=merchant_id,
+                    version=meta.get("version", 1),
+                    effective_from=meta.get("effective_from", datetime.now(UTC)),
+                    supersedes_policy_id=meta.get("supersedes_policy_id"),
                     max_recovery_attempts=meta.get("max_recovery_attempts", 3),
                     min_retry_interval_seconds=meta.get("min_retry_interval_seconds", 300),
                     max_retry_interval_seconds=meta.get("max_retry_interval_seconds", 3600),
                     allowed_actions=meta.get("allowed_actions", DEFAULT_MERCHANT_POLICY.allowed_actions),
                     blocked_methods=meta.get("blocked_methods", []),
+                    blocked_routes=meta.get("blocked_routes", []),
                     cooldown_seconds=meta.get("cooldown_seconds", 600),
+                    requires_human_review=meta.get("requires_human_review", False),
+                    requires_human_review_below_confidence=meta.get("requires_human_review_below_confidence", False),
+                    min_automatic_confidence=meta.get("min_automatic_confidence", 0.60),
                 )
             except Exception:
                 pass
@@ -436,6 +483,8 @@ class RecoveryOrchestrator:
                 candidate.action = policy_result.modified_action
             if policy_result.modified_retry_seconds is not None:
                 candidate.retry_after_seconds = policy_result.modified_retry_seconds
+            if policy_result.modified_recommended_method is not None:
+                candidate.recommended_method = policy_result.modified_recommended_method
             candidate.reason += f" [Policy modified: {policy_result.result}]"
             return candidate
 
@@ -454,25 +503,78 @@ class RecoveryOrchestrator:
         return candidate
 
     @staticmethod
-    def _escalation_payload(bundle, decision: RecoveryDecision) -> dict[str, Any]:
+    def _escalation_payload(record: EscalationRecord) -> dict[str, Any]:
         """Stable audit-first handoff payload; no external ticket is created."""
-        failure = bundle.current_failure
-        evidence_ids = [ref.waggle_node_id for ref in [*bundle.accepted_evidence, *bundle.discarded_evidence]]
         return {
             "action": RecoveryAction.ESCALATE.value,
             "human_review_required": True,
-            "reason": decision.escalation_reason,
-            "merchant_id": failure.merchant_id,
-            "customer_id": failure.customer_id,
-            "failure_code": failure.failure_code,
-            "attempt_count": decision.attempt_count,
-            "max_automated_attempts": decision.max_automated_attempts,
-            "last_safe_action": decision.last_safe_action.value if decision.last_safe_action else None,
-            "evidence_ids": evidence_ids,
-            "policy_result": PolicyResult.BLOCK.value,
+            "record_id": record.id,
+            "recovery_episode_id": record.recovery_episode_id,
+            "reason": record.escalation_reason,
+            "merchant_id": record.merchant_id,
+            "customer_id": record.customer_id,
+            "failure_code": record.failure_reason,
+            "attempt_count": record.attempts_used,
+            "max_automated_attempts": record.max_automated_attempts,
+            "last_safe_action": record.candidate_action.value,
+            "evidence_ids": record.accepted_evidence_ids,
+            "rejected_evidence_ids": record.rejected_evidence_ids,
+            "policy_result": record.policy_result.value,
             "money_movement": "NONE",
-            "recommended_next_step": "Manual review / customer outreach",
+            "recommended_next_step": record.recommended_manual_next_step,
+            "state": record.state,
         }
+
+    @staticmethod
+    def _build_escalation_record(bundle, decision: RecoveryDecision, candidate_action: RecoveryAction) -> EscalationRecord:
+        failure = bundle.current_failure
+        return EscalationRecord(
+            recovery_episode_id=decision.recovery_episode_id,
+            failure_id=failure.id,
+            decision_id=decision.id,
+            merchant_id=failure.merchant_id,
+            customer_id=failure.customer_id,
+            amount=failure.amount,
+            failure_reason=failure.failure_code or failure.failure_reason,
+            attempts_used=decision.attempt_count,
+            max_automated_attempts=decision.max_automated_attempts,
+            candidate_action=decision.last_safe_action or candidate_action,
+            policy_result=decision.policy_result,
+            escalation_reason=decision.escalation_reason,
+            accepted_evidence_ids=[ref.waggle_node_id for ref in bundle.accepted_evidence],
+            rejected_evidence_ids=[ref.waggle_node_id for ref in bundle.discarded_evidence],
+        )
+
+    @staticmethod
+    def _annotate_confidence(decision: RecoveryDecision, bundle, policy: MerchantPolicy) -> None:
+        scores = [float(ref.relevance_score or 0) for ref in bundle.accepted_evidence]
+        decision.evidence_confidence = round(max(scores, default=0.0), 3)
+        if not scores:
+            decision.evidence_quality = "NONE"
+            decision.uncertainty_reason = "No authoritative historical evidence was available"
+        elif decision.evidence_confidence >= 0.80:
+            decision.evidence_quality = "HIGH"
+        elif decision.evidence_confidence >= 0.60:
+            decision.evidence_quality = "MEDIUM"
+        else:
+            decision.evidence_quality = "LOW"
+            decision.uncertainty_reason = "Authoritative evidence relevance is weak"
+
+        materially_conflicting = any(ref.temporal_status.value == "CONFLICTING" for ref in bundle.discarded_evidence)
+        review_reason = ""
+        if policy.requires_human_review:
+            review_reason = "Merchant policy requires human review"
+        elif materially_conflicting:
+            review_reason = "Authoritative evidence is materially conflicting"
+        elif policy.requires_human_review_below_confidence and decision.confidence < policy.min_automatic_confidence:
+            review_reason = (
+                f"Decision confidence {decision.confidence:.0%} is below merchant threshold "
+                f"{policy.min_automatic_confidence:.0%}"
+            )
+        if review_reason:
+            decision.action = RecoveryAction.ESCALATE
+            decision.abstention_reason = review_reason
+            decision.reason = review_reason
 
     @staticmethod
     def _trace_action_summary(decision: RecoveryDecision) -> str:

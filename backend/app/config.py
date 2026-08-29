@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
     razorpay_enabled: bool = False
+    webhook_replay_window_seconds: int = 86400
 
     # Decision engine
     decision_provider: str = "deterministic"  # deterministic / llm / agent
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     groq_model: str = "qwen/qwen3.8-27b"
     agent_temperature: float = 0.0
     agent_timeout_seconds: float = 15.0
+    agent_min_confidence: float = 0.60
 
     # Recovery thresholds
     lookup_first_confidence_threshold: float = 0.75

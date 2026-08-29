@@ -5,6 +5,10 @@ __pycache__/
 .ruff_cache/
 .env
 data/
+!backend/data/
+backend/data/*
+!backend/data/evaluations/
+!backend/data/evaluations/*.json
 dist/
 node_modules/
 *.tsbuildinfo
