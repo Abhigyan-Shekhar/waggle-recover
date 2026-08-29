@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +18,30 @@ from app.recovery.decision_engine import DecisionProvider, create_decision_provi
 from app.recovery.orchestrator import RecoveryOrchestrator
 
 router = APIRouter()
+
+
+def _isolate_demo_run(scenario, run_token: str):
+    """Namespace stateful curated fixtures so repeated demos cannot contaminate one another."""
+    customer_ids = {item.customer_id for item in scenario.history} | {scenario.customer_id}
+    customer_map = {customer_id: f"{customer_id}-D{run_token}" for customer_id in customer_ids}
+    payment_ids = {item.payment_id for item in scenario.history if item.payment_id}
+    if scenario.current_payment_id:
+        payment_ids.add(scenario.current_payment_id)
+    payment_map = {payment_id: f"{payment_id}-{run_token}" for payment_id in payment_ids}
+
+    return replace(
+        scenario,
+        customer_id=customer_map[scenario.customer_id],
+        current_payment_id=payment_map.get(scenario.current_payment_id) if scenario.current_payment_id else None,
+        history=[
+            replace(
+                item,
+                customer_id=customer_map[item.customer_id],
+                payment_id=payment_map.get(item.payment_id, item.payment_id),
+            )
+            for item in scenario.history
+        ],
+    )
 
 
 def _simulator_decision_provider(decision_mode: str, settings: Settings) -> DecisionProvider:
@@ -223,6 +248,11 @@ async def run_demo_scenario(
         scenario = named[scenario_id.lower()]
     else:
         raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not supported via this endpoint")
+
+    # Curated demos are stateful by design. Give each invocation a fresh
+    # customer/payment namespace so yesterday's successful run cannot satisfy
+    # lookup-first and hide the stale evidence this run is meant to prove.
+    scenario = _isolate_demo_run(scenario, uuid.uuid4().hex[:6])
 
     # Populate memory
     from app.evaluation.runner import _populate_memory

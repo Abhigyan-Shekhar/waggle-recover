@@ -321,6 +321,17 @@ h1 em { color: #89948e; font-style: normal; font-weight: 520; }
 .audit-row summary { padding: 11px 12px; color: #b8c2bc; cursor: pointer; font-size: .7rem; font-weight: 700; }
 .audit-row p, .audit-row pre { max-height: 230px; margin: 0; padding: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: .69rem; line-height: 1.5; overflow: auto; white-space: pre-wrap; }
 .audit-row pre { color: #e3b886; }
+.evidence-audit { padding: 12px; border-top: 1px solid var(--line); }
+.evidence-audit > section + section { margin-top: 12px; }
+.evidence-audit h4 { margin: 0 0 7px; color: var(--quiet); font: 750 .6rem ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.evidence-item { display: grid; gap: 4px; margin-top: 6px; padding: 10px; border: 1px solid var(--line); border-left: 3px solid #82a8d2; border-radius: 5px; background: #101613; }
+.evidence-item.rejected { border-left-color: var(--amber); background: #19140f; }
+.evidence-item b { color: var(--text); font-size: .72rem; }
+.evidence-item span { color: var(--muted); font-size: .67rem; line-height: 1.4; }
+.evidence-item small { color: var(--quiet); font: .58rem ui-monospace, monospace; overflow-wrap: anywhere; }
+.evidence-audit .evidence-empty { padding: 9px 10px; border: 1px dashed var(--line); color: var(--quiet); }
+.evidence-audit .raw-evidence { margin-top: 12px; background: #090c0b; }
+.evidence-audit .raw-evidence summary { padding: 9px 10px; font-size: .62rem; }
 
 .agent-trace, .strategy-memory { padding: 26px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); }
 .trace-heading, .evaluation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; margin-bottom: 24px; }

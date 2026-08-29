@@ -57,6 +57,21 @@ AGENT_RESPONSE_SCHEMA = {
 }
 
 
+def safe_model_error(exc: Exception) -> tuple[str, str]:
+    """Return an actionable, non-secret failure reason and stage detail."""
+    message = str(exc)
+    status_code = getattr(exc, "status_code", None)
+    if message == "GROQ_API_KEY is not configured":
+        return message, "Qwen is disabled until GROQ_API_KEY is configured; safe deterministic fallback selected."
+    if message == "GROQ_MODEL is not configured":
+        return message, "Qwen has no configured model; safe deterministic fallback selected."
+    if status_code == 429 or type(exc).__name__ == "RateLimitError":
+        return "Groq rate limit reached (HTTP 429)", "Groq rate-limited the request; safe deterministic fallback selected."
+    if status_code in {401, 403} or type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"}:
+        return "Groq authentication failed", "Groq rejected the configured credentials; safe deterministic fallback selected."
+    return f"Model call failed ({type(exc).__name__})", "Qwen was unavailable; safe deterministic fallback selected."
+
+
 class AgentModelClient(Protocol):
     """Small injectable boundary so tests never need a network call."""
 
@@ -238,9 +253,10 @@ class AgentDecisionProvider(DecisionProvider):
             detail = "Qwen timed out; safe deterministic fallback selected."
         except Exception as exc:
             response = ""
-            errors = [f"Model call failed ({type(exc).__name__})"]
+            safe_error, detail = safe_model_error(exc)
+            errors = [safe_error]
             status = "fallback"
-            detail = "Qwen was unavailable; safe deterministic fallback selected."
+            LOGGER.warning("Qwen candidate request failed: %s", safe_error)
 
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
         trace["model_latency_ms"] = latency_ms

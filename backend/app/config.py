@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     gemini_api_key: str = ""
     groq_api_key: str = ""
-    groq_model: str = ""
+    # Keep the public model choice reproducible; only the API key is secret/runtime configuration.
+    groq_model: str = "qwen/qwen3.8-27b"
     agent_temperature: float = 0.0
     agent_timeout_seconds: float = 15.0
 

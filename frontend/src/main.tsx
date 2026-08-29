@@ -5,8 +5,8 @@ import "./styles.css";
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 type Metrics = { gmv_at_risk: number; recovered_gmv: number; recovery_rate_pct: number; stale_evidence_prevented: number; policy_violations: number };
-type Evidence = { rejection_reason?: string; metadata?: { instrument_id?: string; retry_after_seconds?: number } };
-type Recovery = { id: string; customer_id: string; amount: number; method: string; instrument_id?: string; failure_code: string; action?: string; recommended_method?: string; retry_after_seconds?: number; outcome?: string; recovered_amount?: number; explanation?: string; discarded_json?: Evidence[]; policy_result?: string; human_review_required?: boolean | number; escalation_reason?: string; attempt_count?: number; max_automated_attempts?: number; last_safe_action?: string };
+type Evidence = { waggle_node_id?: string; label?: string; memory_type?: string; temporal_status?: string; relevance_score?: number; rejection_reason?: string; metadata?: { instrument_id?: string; retry_after_seconds?: number; action_type?: string; outcome?: string } };
+type Recovery = { id: string; customer_id: string; amount: number; method: string; instrument_id?: string; failure_code: string; action?: string; recommended_method?: string; retry_after_seconds?: number; outcome?: string; recovered_amount?: number; explanation?: string; evidence_json?: Evidence[]; discarded_json?: Evidence[]; policy_result?: string; human_review_required?: boolean | number; escalation_reason?: string; attempt_count?: number; max_automated_attempts?: number; last_safe_action?: string };
 type Scenario = { id: string; name: string; category?: string; has_stale_memory?: boolean; has_useful_memory?: boolean };
 type SystemMetrics = { name: string; action_accuracy_pct: number; success_rate_pct: number; recovery_rate_gmv_pct: number; stale_rejection_rate_pct: number; avg_latency_ms: number };
 type EvaluationSummary = { scenario_count: number; systems: Record<"baseline_a" | "baseline_b" | "system_c", SystemMetrics> };
@@ -331,6 +331,7 @@ function App() {
 
   const systems = evaluation ? [evaluation.systems.baseline_a, evaluation.systems.baseline_b, evaluation.systems.system_c] : [];
   const rejectedEvidence = selected?.discarded_json ?? [];
+  const acceptedEvidence = selected?.evidence_json ?? [];
   const staleInstrument = rejectedEvidence.find(item => item.metadata?.instrument_id)?.metadata?.instrument_id;
   const rejectedRetrySeconds = rejectedEvidence.find(item => item.metadata?.retry_after_seconds)?.metadata?.retry_after_seconds;
   const hasRejectedMemory = Boolean(staleInstrument && selected?.instrument_id);
@@ -420,7 +421,7 @@ function App() {
                 <div className="flow-link"><span>policy</span></div>
                 <div className={`decision-step action-step ${escalationRequired ? "escalation-step" : ""}`}><span>Final action</span><strong>{actionSummary(selected.action, selected.retry_after_seconds, selected.recommended_method)}</strong><small>{escalationRequired ? "Human review · no payment action" : selected.outcome ?? "pending outcome"}</small></div>
               </div>
-              <div className="audit-row"><details><summary>Decision explanation</summary><p>{selected.explanation || "No explanation recorded."}</p></details><details><summary>Evidence audit · {rejectedEvidence.length} rejected</summary><pre>{JSON.stringify(rejectedEvidence, null, 2)}</pre></details></div>
+              <div className="audit-row"><details><summary>Decision explanation</summary><p>{selected.explanation || "No explanation recorded."}</p></details><details open><summary>Evidence audit · {acceptedEvidence.length} accepted · {rejectedEvidence.length} rejected</summary><div className="evidence-audit"><section><h4>Accepted evidence</h4>{acceptedEvidence.length ? acceptedEvidence.map((item, index) => <div className="evidence-item accepted" key={item.waggle_node_id ?? index}><b>{item.label || item.memory_type || "Validated memory"}</b><span>{item.metadata?.action_type ? actionSummary(item.metadata.action_type, item.metadata.retry_after_seconds) : item.temporal_status || "current"}</span><small>{item.waggle_node_id || "Recorded Waggle node"}</small></div>) : <p className="evidence-empty">No historical memory was needed for this decision.</p>}</section><section><h4>Rejected evidence</h4>{rejectedEvidence.length ? rejectedEvidence.map((item, index) => <div className="evidence-item rejected" key={item.waggle_node_id ?? index}><b>{item.label || item.memory_type || "Excluded memory"}</b><span>{item.rejection_reason || "Outside the authoritative scope"}</span><small>{item.waggle_node_id || "Recorded Waggle node"}</small></div>) : <p className="evidence-empty">No stale or superseded memory was retrieved.</p>}</section><details className="raw-evidence"><summary>Raw audit JSON</summary><pre>{JSON.stringify({ accepted: acceptedEvidence, rejected: rejectedEvidence }, null, 2)}</pre></details></div></details></div>
             </> : <div className="inspector-empty"><div className="empty-glyph"><span>F</span><i /><span>M</span><i /><span>D</span></div><strong>No decision selected</strong><p>Run <b>Stale Card Trap</b> to see an old success retrieved, invalidated, and excluded before the final action.</p></div>}
           </article>
         </div>

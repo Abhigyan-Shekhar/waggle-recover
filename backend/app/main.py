@@ -133,7 +133,16 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        agent_configured = bool(settings.groq_api_key and settings.groq_model)
+        return {
+            "status": "ok",
+            "agent": {
+                "provider": "groq",
+                "configured": agent_configured,
+                "model": settings.groq_model or None,
+                "reason": None if agent_configured else "GROQ_API_KEY is not configured",
+            },
+        }
 
     return app
 

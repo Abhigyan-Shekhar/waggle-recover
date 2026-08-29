@@ -24,7 +24,7 @@ from app.evaluation.generator import ScenarioGenerator
 from app.evaluation.runner import _populate_memory
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
-from app.recovery.agent import AgentDecisionProvider
+from app.recovery.agent import AgentDecisionProvider, GroqQwenClient
 from app.recovery.decision_engine import DeterministicDecisionProvider, create_decision_provider
 from app.recovery.orchestrator import RecoveryOrchestrator
 
@@ -190,6 +190,31 @@ def test_timeout_uses_deterministic_fallback(evidence_bundle):
     assert trace["fallback_reason"] == "Model call timed out"
 
 
+def test_missing_groq_key_reports_configuration_problem(evidence_bundle):
+    provider = AgentDecisionProvider(
+        model="qwen/qwen3.8-27b",
+        model_client=GroqQwenClient(api_key="", timeout_seconds=1),
+    )
+    _, trace = provider.decide_with_trace(evidence_bundle)
+
+    assert trace["agent_fallback"] is True
+    assert trace["fallback_reason"] == "GROQ_API_KEY is not configured"
+    assert "disabled until GROQ_API_KEY" in trace["stages"][2]["detail"]
+
+
+def test_rate_limit_is_distinguished_from_generic_model_failure(evidence_bundle):
+    rate_limit = RuntimeError("response body must not leak")
+    rate_limit.status_code = 429  # type: ignore[attr-defined]
+    _, trace = AgentDecisionProvider(
+        model="test-qwen",
+        model_client=FakeModelClient(rate_limit),
+    ).decide_with_trace(evidence_bundle)
+
+    assert trace["agent_fallback"] is True
+    assert trace["fallback_reason"] == "Groq rate limit reached (HTTP 429)"
+    assert "response body" not in json.dumps(trace)
+
+
 def test_no_history_does_not_fabricate_evidence(evidence_bundle):
     empty = evidence_bundle.model_copy(update={
         "accepted_evidence": [],
@@ -252,8 +277,9 @@ def test_policy_blocks_agent_method_proposal(orchestrator_setup):
 
     assert result["agent_trace"]["candidate_action"] == "SUGGEST_METHOD"
     assert result["agent_trace"]["policy_result"] == "BLOCK"
-    assert result["decision"]["action"] == "STOP"
+    assert result["decision"]["action"] == "ESCALATE"
     assert result["decision"]["recommended_method"] is None
+    assert result["decision"]["human_review_required"] is True
 
 
 def test_stale_card_trap_agent_cannot_use_old_timing(orchestrator_setup):
