@@ -185,17 +185,5 @@ npm run build
 - Merchant strategy priors are advisory. The preregistered sequential experiment showed no uplift after exact current timing evidence regained correct precedence; no adaptive-strategy uplift should be claimed.
 - The sample n8n workflow is a demo handoff, not a production case-management system.
 
-## 5-MINUTE DEMO
-
-1. **00:00–00:25 — Thesis.** Relevant history is not necessarily authoritative history.
-2. **00:25–01:10 — Stale Card Trap.** Run `curated_003`; show old success, replacement edge, rejected audit evidence, sanitized Qwen trace, and the current-policy action.
-3. **01:10–01:40 — Why Waggle.** Run the shadow: validation OFF uses stale timing; ON removes it. Show cached ablation metrics.
-4. **01:40–02:20 — Razorpay Test Mode.** Signed `payment.failed` → approved Payment Link → `PENDING` and recovered zero → complete Test Mode payment → `payment.captured` → provider-confirmed recovery.
-5. **02:20–02:50 — Policy Changed.** Save a version blocking card; show immutable history and a current decision where current policy wins.
-6. **02:50–03:20 — Escalation.** Exhaust attempts; show terminal `ESCALATE`, money movement `NONE`, and n8n ID/disabled/failed state. Replay cannot restart it.
-7. **03:20–04:00 — Batch.** Run 25 cases; show separate money classes, zero unsafe actions/violations, filters, and one decision graph.
-8. **04:00–04:35 — Deterministic proof.** Show 200-case, 1,000-case, and authority-ablation reports; always say SIMULATED GMV.
-9. **04:35–04:55 — Qwen boundary.** Show 100% structured output but 52% candidate/60% post-policy accuracy and zero rejected-memory use: the model is not final financial authority.
-10. **04:55–05:00 — Close.** “Waggle decides what memory is authoritative. Qwen proposes. Policy decides what is allowed. Razorpay confirms whether money was actually recovered.”
 
 Safe claim: **100% parameter-aware action accuracy on the current seeded deterministic 200-case benchmark**, not production. Safe claim: **temporal validation improved deterministic accuracy from 89% to 100% in the controlled seeded ablation**. Never call Test Mode capture real customer revenue, a created Payment Link recovered money, Qwen 100% accurate, or adaptive strategies uplifted.
