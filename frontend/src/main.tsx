@@ -41,6 +41,7 @@ type LabWebhook = { provider_event_id: string; event_type: string; payment_id: s
 type RazorpayLabState = { configuration: LabConfiguration; executions: LabExecution[]; webhooks: LabWebhook[] };
 
 const money = (paise = 0) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(paise / 100);
+const proofMoney = (paise = 0) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(paise / 100);
 const actionSummary = (action?: string | null, retry?: number | null, method?: string | null) =>
   `${action?.replaceAll("_", " ") ?? "—"}${retry != null ? ` · ${retry}s` : method ? ` · ${method.toUpperCase()}` : ""}`;
 const scenarioCopy: Record<string, { index: string; description: string }> = {
@@ -220,7 +221,7 @@ function App() {
   const [policySaving, setPolicySaving] = useState(false);
   const [razorpayLab, setRazorpayLab] = useState<RazorpayLabState | null>(null);
   const [labRunning, setLabRunning] = useState(false);
-  const [labAmount, setLabAmount] = useState(8000);
+  const [labAmount, setLabAmount] = useState(1);
   const [labCustomer, setLabCustomer] = useState("CUST-RAZORPAY-LAB");
   const [labMethod, setLabMethod] = useState("card");
   const [labFailureCode, setLabFailureCode] = useState("expired_card");
@@ -229,7 +230,9 @@ function App() {
   const evaluationRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<HTMLElement | null>(null);
   const agentTraceRef = useRef<HTMLElement | null>(null);
+  const razorpayLabRef = useRef<HTMLElement | null>(null);
   const demoTourCancelled = useRef(false);
+  const [razorpayLabActive, setRazorpayLabActive] = useState(false);
 
   const refresh = async (): Promise<Recovery[]> => {
     try {
@@ -259,15 +262,29 @@ function App() {
     }
   };
 
-  const refreshRazorpayLab = async () => {
+  const refreshRazorpayLab = async (silent = false) => {
     try {
       const response = await fetch(`${API}/api/razorpay-lab/state`);
       if (!response.ok) throw new Error("Razorpay Test Lab is unavailable.");
       setRazorpayLab(await response.json());
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Razorpay Test Lab is unavailable."); }
+    } catch (cause) {
+      if (!silent) setError(cause instanceof Error ? cause.message : "Razorpay Test Lab is unavailable.");
+    }
   };
 
   useEffect(() => { void refresh(); void refreshRazorpayLab(); }, []);
+  useEffect(() => {
+    const section = razorpayLabRef.current;
+    if (!section) return;
+    const observer = new IntersectionObserver(([entry]) => setRazorpayLabActive(entry.isIntersecting), { threshold: 0.08 });
+    observer.observe(section);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!razorpayLabActive) return;
+    const interval = window.setInterval(() => void refreshRazorpayLab(true), 1000);
+    return () => window.clearInterval(interval);
+  }, [razorpayLabActive]);
 
   const inspectRecovery = async (row: Recovery, scrollToGraph = false) => {
     setSelected(row);
@@ -564,6 +581,13 @@ function App() {
   const labPendingCount = razorpayLab?.executions.filter(item => item.status === "PENDING").length ?? 0;
   const labSuccessCount = razorpayLab?.executions.filter(item => item.status === "SUCCESS").length ?? 0;
   const labMockRecovered = razorpayLab?.executions.filter(item => item.provider === "razorpay_mock" && item.status === "SUCCESS").reduce((sum, item) => sum + item.amount, 0) ?? 0;
+  const featuredExecution = razorpayLab?.executions.find(item => item.provider === "razorpay_test") ?? razorpayLab?.executions[0];
+  const featuredIsReal = featuredExecution?.provider === "razorpay_test";
+  const featuredSucceeded = featuredExecution?.status === "SUCCESS";
+  const matchingWebhook = featuredExecution?.provider_payment_id
+    ? razorpayLab?.webhooks.find(item => item.payment_id === featuredExecution.provider_payment_id && item.event_type === "payment.captured")
+    : undefined;
+  const featuredRecovered = featuredSucceeded ? (featuredExecution?.recovered_amount ?? featuredExecution?.amount ?? 0) : 0;
 
   return <div className="app-shell">
     <nav className="topbar" aria-label="Primary navigation">
@@ -660,15 +684,22 @@ function App() {
         </div>
       </section>
 
-      <section className="razorpay-lab-section" id="razorpay-lab">
-        <div className="razorpay-lab-head"><div><p className="section-index">RAZORPAY TEST LAB</p><div className="razorpay-wordmark"><i>R</i><span>Razorpay</span><b>Test Lab</b></div><p>Full recovery-loop demo using the normal Waggle pipeline and Razorpay-compatible Test Mode semantics.</p></div><div className={`lab-mode ${razorpayLab?.configuration.real_test_mode_connected ? "connected" : "mock"}`}><i /><span>{razorpayLab?.configuration.mode_label ?? "Checking Test Mode…"}</span><small>NO REAL MONEY</small></div></div>
-        <div className="lab-proof-bar"><span><b>payment.failed</b> signed input</span><i>→</i><span><b>Waggle</b> authority</span><i>→</i><span><b>PolicyEngine</b> final</span><i>→</i><span><b>Payment Link</b> pending</span><i>→</i><span><b>payment.captured</b> confirms</span></div>
-        <div className="lab-dashboard">
-          <article className="lab-composer"><div className="lab-card-title"><span>01</span><div><strong>Inject payment failure</strong><small>Signed Test Lab webhook</small></div></div><label>Failure preset<select value={labFailureCode} onChange={event => setLabFailureCode(event.target.value)}><option value="expired_card">Expired card</option><option value="issuer_unavailable">Issuer unavailable</option><option value="insufficient_funds">Insufficient balance</option><option value="card_blocked">Card blocked</option></select></label><div className="lab-field-row"><label>Amount (₹)<input type="number" min="1" max="1000000" value={labAmount} onChange={event => setLabAmount(Number(event.target.value))} /></label><label>Failed method<select value={labMethod} onChange={event => setLabMethod(event.target.value)}><option value="card">Card</option><option value="upi">UPI</option><option value="netbanking">Netbanking</option><option value="wallet">Wallet</option></select></label></div><label>Customer alias<input value={labCustomer} onChange={event => setLabCustomer(event.target.value)} /></label><button className="razorpay-action" disabled={labRunning} onClick={() => void createLabFailure()}>{labRunning ? <><span className="spinner dark" /> Sending event</> : <>Send payment.failed <span>→</span></>}</button><p className="lab-disclosure">{razorpayLab?.configuration.real_test_mode_connected ? `Creates a real Razorpay Test Mode Payment Link through the API. Test limit: ${razorpayLab.configuration.payment_link_test_limit} links per business.` : "No Test API keys detected. The local provider creates an isolated mock Payment Link and never contributes to Razorpay-confirmed GMV."}</p></article>
-          <article className="lab-status-card"><div className="lab-card-title"><span>02</span><div><strong>Recovery operations</strong><small>Payment Links and confirmation state</small></div></div><div className="lab-kpis"><div><span>Links</span><b>{razorpayLab?.executions.length ?? 0}</b></div><div><span>Pending</span><b>{labPendingCount}</b></div><div><span>Confirmed</span><b>{labSuccessCount}</b></div><div><span>Mock only</span><b>{money(labMockRecovered)}</b></div></div><div className="lab-execution-list">{razorpayLab?.executions.slice(0, 6).map(execution => <div className={`lab-execution ${execution.status.toLowerCase()}`} key={execution.id}><div><span className="lab-provider">{execution.provider_label}</span><strong>{actionSummary(execution.action, execution.retry_after_seconds, execution.recommended_method)}</strong><small>{execution.provider_execution_id} · {money(execution.amount)}</small></div><div><span className={`lab-status ${execution.status.toLowerCase()}`}>{execution.status}</span>{execution.status === "PENDING" && execution.provider === "razorpay_mock" && <button onClick={() => { setLabCheckout(execution); setLabCheckoutMethod(execution.recommended_method ?? "upi"); }}>Open mock checkout</button>}{execution.status === "PENDING" && execution.provider === "razorpay_test" && execution.public_url && <a target="_blank" rel="noreferrer" href={execution.public_url}>Open Razorpay Checkout</a>}<button onClick={() => void openLabAudit(execution)}>Audit graph</button></div><p>{execution.confirmation_label}</p></div>)}{!razorpayLab?.executions.length && <div className="lab-empty"><span>◌</span><strong>No Test Lab executions yet</strong><small>Send an expired-card failure to create the first bounded Payment Link.</small></div>}</div></article>
+      <section ref={razorpayLabRef} className="razorpay-lab-section" id="razorpay-lab">
+        <div className="razorpay-lab-head"><div><p className="section-index">06 / LIVE RECOVERY</p><h2>From failed payment to provider-confirmed recovery.</h2><p>Waggle decides the recovery. Razorpay confirms whether it actually succeeded.</p></div><div className={`lab-mode ${razorpayLab?.configuration.real_test_mode_connected ? "connected" : "mock"}`}><i /><span>{razorpayLab?.configuration.real_test_mode_connected ? "CONNECTED RAZORPAY TEST API" : razorpayLab ? "LOCAL RAZORPAY MOCK" : "CHECKING PROVIDER…"}</span><small>{razorpayLab?.configuration.real_test_mode_connected ? "REAL TEST API · NO REAL MONEY" : "SIMULATED PROVIDER · NO REAL MONEY"}</small></div></div>
+        <div className="lab-proof-bar">{[["FAILURE", Boolean(featuredExecution)], ["WAGGLE", Boolean(featuredExecution)], ["QWEN", Boolean(featuredExecution)], ["POLICY", Boolean(featuredExecution)], ["PAYMENT LINK", Boolean(featuredExecution)], ["CAPTURE", featuredSucceeded], ["RECOVERY", featuredSucceeded]].map(([label, done], index) => <div className={done ? "complete" : "waiting"} key={String(label)}><span>{done ? "✓" : index < 5 ? "—" : "○"}</span><b>{label}</b><small>{index === 5 && !done ? "waiting" : index === 6 && !done ? "pending" : ""}</small></div>)}</div>
+        <div className="lab-dashboard live-proof-dashboard">
+          <article className="lab-composer"><div className="lab-card-title"><span>01</span><div><strong>Start with a failed payment</strong><small>Create one bounded recovery attempt</small></div></div><label>Failure preset<select value={labFailureCode} onChange={event => setLabFailureCode(event.target.value)}><option value="expired_card">Expired card</option><option value="issuer_unavailable">Issuer unavailable</option><option value="insufficient_funds">Insufficient balance</option><option value="card_blocked">Card blocked</option></select></label><div className="lab-field-row"><label>Amount (₹)<input type="number" min="1" max="1000000" value={labAmount} onChange={event => setLabAmount(Number(event.target.value))} /></label><label>Failed method<select value={labMethod} onChange={event => setLabMethod(event.target.value)}><option value="card">Card</option><option value="upi">UPI</option><option value="netbanking">Netbanking</option><option value="wallet">Wallet</option></select></label></div><label>Customer alias<input value={labCustomer} onChange={event => setLabCustomer(event.target.value)} /></label><button className="razorpay-action" disabled={labRunning} onClick={() => void createLabFailure()}>{labRunning ? <><span className="spinner dark" /> Sending event</> : <>SEND payment.failed <span>→</span></>}</button><p className="lab-disclosure">{razorpayLab?.configuration.real_test_mode_connected ? "Creates a real Razorpay Test Mode Payment Link. Test Mode moves no real money." : "Creates an isolated local mock link. Mock recovery never counts as Razorpay-confirmed recovery."}</p></article>
+          <article className={`live-execution-card ${featuredSucceeded ? "success" : "pending"}`}>
+            {featuredExecution ? <><div className="live-card-top"><div><span className="lab-provider">{featuredIsReal ? "RAZORPAY TEST MODE" : "LOCAL RAZORPAY MOCK"}</span><h3>{proofMoney(featuredExecution.amount)} FAILED PAYMENT</h3></div><span className={`lab-status ${featuredExecution.status.toLowerCase()}`}>{featuredExecution.status}</span></div>
+              <div className="agent-story"><div><span>WAGGLE MEMORY</span><b>Authority checked</b><small>Only current evidence can influence recovery</small></div><i>→</i><div><span>QWEN</span><b>{actionSummary(featuredExecution.action, featuredExecution.retry_after_seconds, featuredExecution.recommended_method)}</b><small>candidate action</small></div><i>→</i><div><span>POLICY</span><b>{featuredExecution.policy_result ?? "—"}</b><small>final authority</small></div></div><p className="policy-line">Qwen proposes. Policy decides.</p>
+              <div className="execution-proof-grid"><div><span>Provider</span><b>{featuredExecution.provider_label}</b></div><div><span>Payment Link</span><b>{featuredExecution.provider_execution_id ?? "—"}</b></div><div><span>Payment</span><b>{featuredExecution.provider_payment_id ?? "Waiting for capture"}</b></div><div><span>Recovered</span><b className={featuredSucceeded ? "recovered" : "zero"}>{proofMoney(featuredRecovered)}</b></div></div>
+              <div className={`webhook-proof ${matchingWebhook ? "confirmed" : "waiting"}`}><div><span>WEBHOOK</span><strong>{matchingWebhook ? "payment.captured ✓" : "Waiting for signed payment.captured"}</strong></div>{matchingWebhook && <><div><span>Signature</span><b>{matchingWebhook.signature_valid ? "VALID ✓" : "REJECTED"}</b></div><div><span>Processing</span><b>{matchingWebhook.processed ? "COMPLETE ✓" : "PENDING"}</b></div><div><span>Event</span><b>{matchingWebhook.provider_event_id}</b><small>{new Date(matchingWebhook.created_at).toLocaleString()}</small></div></>}</div>
+              <div className={`recovery-verdict ${featuredSucceeded ? "success" : "pending"}`}><span>RECOVERY</span><strong>{featuredSucceeded ? "PENDING → SUCCESS" : "PENDING · ₹0 RECOVERED"}</strong><b>{featuredSucceeded ? featuredExecution.confirmation_label : "Payment Link created. Revenue is still ₹0 until payment.captured."}</b>{featuredSucceeded && <em>{proofMoney(featuredRecovered)} {featuredIsReal ? "TEST MODE RECOVERED" : "MOCK RECOVERED"}</em>}<small>No real money moved.</small></div>
+              <div className="live-actions">{featuredExecution.status === "PENDING" && featuredIsReal && featuredExecution.public_url && <a className="primary" target="_blank" rel="noreferrer" href={featuredExecution.public_url}>OPEN RAZORPAY TEST CHECKOUT ↗</a>}{featuredExecution.status === "PENDING" && !featuredIsReal && <button className="primary" onClick={() => { setLabCheckout(featuredExecution); setLabCheckoutMethod(featuredExecution.recommended_method ?? "upi"); }}>OPEN LOCAL MOCK CHECKOUT</button>}<button onClick={() => void openLabAudit(featuredExecution)}>VIEW AUDIT</button></div></> : <div className="lab-empty"><span>◌</span><strong>No live recovery yet</strong><small>Send a failed payment to watch memory, Qwen, policy, and the provider complete one trace.</small></div>}
+          </article>
         </div>
-        <div className="lab-webhooks"><div className="lab-card-title"><span>03</span><div><strong>Webhook event stream</strong><small>Safe metadata only · raw payload and secrets stay server-side</small></div></div><div className="webhook-stream">{razorpayLab?.webhooks.slice(0, 8).map(item => <div key={item.provider_event_id}><span className={`webhook-icon ${item.event_type.includes("captured") ? "captured" : "failed"}`}>{item.event_type.includes("captured") ? "✓" : "!"}</span><strong>{item.event_type}</strong><small>{item.payment_id}</small><span>{item.signature_valid ? "SIGNATURE VALID" : "REJECTED"}</span><time>{new Date(item.created_at).toLocaleTimeString()}</time></div>)}{!razorpayLab?.webhooks.length && <p>No Test Lab webhooks recorded.</p>}</div></div>
-        <div className="lab-boundary"><b>Authority boundary</b><span>{razorpayLab?.configuration.capture_authority ?? "Loading capture authority…"}</span><small>Local mock success is labeled separately and is never included in provider-confirmed Razorpay GMV.</small></div>
+        <details className="lab-secondary"><summary>Developer details · {razorpayLab?.executions.length ?? 0} links · {labPendingCount} pending · {labSuccessCount} confirmed</summary><div className="lab-secondary-grid"><div className="lab-execution-list">{razorpayLab?.executions.slice(0, 6).map(execution => <div className={`lab-execution ${execution.status.toLowerCase()}`} key={execution.id}><div><span className="lab-provider">{execution.provider_label}</span><strong>{actionSummary(execution.action, execution.retry_after_seconds, execution.recommended_method)}</strong><small>{execution.provider_execution_id} · {proofMoney(execution.amount)}</small></div><div><span className={`lab-status ${execution.status.toLowerCase()}`}>{execution.status}</span><button onClick={() => void openLabAudit(execution)}>Audit graph</button></div><p>{execution.confirmation_label}</p></div>)}</div><div className="webhook-stream">{razorpayLab?.webhooks.slice(0, 8).map(item => <div key={item.provider_event_id}><span className={`webhook-icon ${item.event_type.includes("captured") ? "captured" : "failed"}`}>{item.event_type.includes("captured") ? "✓" : "!"}</span><strong>{item.event_type}</strong><small>{item.payment_id}</small><span>{item.signature_valid ? "SIGNATURE VALID" : "REJECTED"}</span><time>{new Date(item.created_at).toLocaleTimeString()}</time></div>)}{!razorpayLab?.webhooks.length && <p>No Test Lab webhooks recorded.</p>}</div></div><p>Local mock recovered: {proofMoney(labMockRecovered)}</p></details>
+        <div className="lab-boundary"><b>Recovery truth</b><span>Creating a recovery link is not counted as recovered revenue. Waggle records recovery only after a verified payment.captured event.</span><small>{razorpayLab?.configuration.capture_authority ?? "Loading capture authority…"}</small></div>
       </section>
 
       {agentTrace && <section ref={agentTraceRef} className={`agent-trace ${agentTrace.agent_fallback ? "fallback-trace" : ""}`}><div className="trace-heading"><div><p className="section-index">CONSTRAINED MODEL TRACE</p><h2>Qwen proposes. Policy decides.</h2></div><div className="model-chip"><span>Groq · {agentTrace.model}</span><small>{agentTrace.model_latency_ms} ms</small></div></div>{agentTrace.agent_fallback && <div className="fallback-banner"><strong>Safe fallback used</strong><span>{agentTrace.fallback_reason}</span></div>}<div className="trace-stages">{agentTrace.stages.map((stage, index) => <article key={`${stage.key}-${index}`} className={`trace-stage ${stage.status}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.label}</strong><p>{stage.detail}</p></div></article>)}</div><div className="trace-result"><div><span>Model candidate</span><strong>{actionSummary(agentTrace.candidate_action, agentTrace.candidate_retry_after_seconds, agentTrace.candidate_recommended_method)}</strong><small>{agentTrace.candidate_reason}</small></div><i>→</i><div><span>Policy Guard</span><strong>{agentTrace.policy_result ?? "—"}</strong><small>deterministic constraints</small></div><i>→</i><div><span>Recorded action</span><strong>{actionSummary(agentTrace.final_action, agentTrace.final_retry_after_seconds, agentTrace.final_recommended_method)}</strong><small>model never moves money</small></div></div></section>}
