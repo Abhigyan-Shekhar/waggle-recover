@@ -35,6 +35,10 @@ type BatchCase = { id: string; failure_id: string; customer_id: string; amount: 
 type RecoveryBatch = { id: string; case_count: number; total_gmv_at_risk: number; simulated_recovered_gmv: number; pending_test_mode_gmv: number; confirmed_test_mode_recovered_gmv: number; stopped_gmv: number; human_review_gmv: number; retry_after_count: number; suggest_method_count: number; customer_nudge_count: number; stop_count: number; escalation_count: number; stale_memories_rejected: number; unsafe_action_count: number; policy_violation_count: number; cases: BatchCase[] };
 type MerchantPolicy = { policy_id?: string; merchant_id: string; version: number; max_recovery_attempts: number; min_retry_interval_seconds: number; max_retry_interval_seconds: number; allowed_actions: string[]; blocked_methods: string[]; blocked_routes: string[]; requires_human_review: boolean; requires_human_review_below_confidence: boolean; min_automatic_confidence: number };
 type PolicyResponse = { current: MerchantPolicy; history: Array<MerchantPolicy & { node_id: string; current: boolean; valid_to?: string | null }> };
+type LabConfiguration = { mode: "local_mock" | "razorpay_test_api"; mode_label: string; real_test_mode_connected: boolean; mock_enabled: boolean; test_mode: boolean; real_money: boolean; payment_link_test_limit: number; capture_authority: string };
+type LabExecution = { id: string; provider: string; provider_label: string; provider_execution_id?: string; public_url?: string; failure_id: string; recovery_episode_id: string; decision_id: string; customer_id: string; merchant_id: string; amount: number; currency: string; status: string; provider_status?: string; provider_payment_id?: string; confirmed_at?: string; action?: string; recommended_method?: string; retry_after_seconds?: number; failure_code?: string; failed_method?: string; policy_result?: string; recovered_amount?: number; confirmation_label: string };
+type LabWebhook = { provider_event_id: string; event_type: string; payment_id: string; signature_valid: boolean | number; processed: boolean | number; created_at: string };
+type RazorpayLabState = { configuration: LabConfiguration; executions: LabExecution[]; webhooks: LabWebhook[] };
 
 const money = (paise = 0) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(paise / 100);
 const actionSummary = (action?: string | null, retry?: number | null, method?: string | null) =>
@@ -81,7 +85,9 @@ function GraphView({ graph, loading }: { graph: MemoryGraph | null; loading: boo
   const escalationGraph = Boolean(uniqueNodes.find(node => node.id === rootId)?.metadata?.human_review_required);
   const relation = (name: string) => graph.edges.find(edge => edge.metadata?.relation === name);
   const currentFailureId = relation("decision_for_failure")?.target_id;
-  const currentOutcomeId = relation("outcome_of_decision")?.source_id;
+  const outcomeEdges = graph.edges.filter(edge => edge.metadata?.relation === "outcome_of_decision");
+  const currentOutcomeId = outcomeEdges.find(edge => uniqueNodes.find(node => node.id === edge.source_id)?.metadata?.outcome === "SUCCESS")?.source_id
+    ?? outcomeEdges.at(-1)?.source_id;
   const rejectedIds = new Set(graph.edges.filter(edge => edge.metadata?.validation_status === "rejected").map(edge => edge.target_id));
   const acceptedIds = new Set(graph.edges.filter(edge => edge.metadata?.validation_status === "accepted").map(edge => edge.target_id));
   const currentInstrument = String(uniqueNodes.find(node => node.id === currentFailureId)?.metadata?.instrument_id ?? "");
@@ -212,6 +218,14 @@ function App() {
   const [policy, setPolicy] = useState<PolicyResponse | null>(null);
   const [policyDraft, setPolicyDraft] = useState<MerchantPolicy | null>(null);
   const [policySaving, setPolicySaving] = useState(false);
+  const [razorpayLab, setRazorpayLab] = useState<RazorpayLabState | null>(null);
+  const [labRunning, setLabRunning] = useState(false);
+  const [labAmount, setLabAmount] = useState(8000);
+  const [labCustomer, setLabCustomer] = useState("CUST-RAZORPAY-LAB");
+  const [labMethod, setLabMethod] = useState("card");
+  const [labFailureCode, setLabFailureCode] = useState("expired_card");
+  const [labCheckout, setLabCheckout] = useState<LabExecution | null>(null);
+  const [labCheckoutMethod, setLabCheckoutMethod] = useState("upi");
   const evaluationRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<HTMLElement | null>(null);
   const agentTraceRef = useRef<HTMLElement | null>(null);
@@ -245,7 +259,15 @@ function App() {
     }
   };
 
-  useEffect(() => { void refresh(); }, []);
+  const refreshRazorpayLab = async () => {
+    try {
+      const response = await fetch(`${API}/api/razorpay-lab/state`);
+      if (!response.ok) throw new Error("Razorpay Test Lab is unavailable.");
+      setRazorpayLab(await response.json());
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Razorpay Test Lab is unavailable."); }
+  };
+
+  useEffect(() => { void refresh(); void refreshRazorpayLab(); }, []);
 
   const inspectRecovery = async (row: Recovery, scrollToGraph = false) => {
     setSelected(row);
@@ -382,6 +404,47 @@ function App() {
     finally { setPolicySaving(false); }
   };
 
+  const labFailureDescription = labFailureCode === "expired_card" ? "Card expired" : labFailureCode === "insufficient_funds" ? "Insufficient balance" : labFailureCode === "issuer_unavailable" ? "Issuer temporarily unavailable" : "Payment authorization failed";
+  const createLabFailure = async () => {
+    setLabRunning(true); setError(null); setMessage("Injecting a signed Test Lab payment.failed event into the normal recovery pipeline…");
+    try {
+      const response = await fetch(`${API}/api/razorpay-lab/failures`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount: Math.round(labAmount * 100), customer_id: labCustomer, merchant_id: "MERCH-RAZORPAY-LAB", method: labMethod, instrument_id: `${labMethod}_9988`, failure_code: labFailureCode, failure_description: labFailureDescription }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "Test Lab failure could not be created.");
+      setRazorpayLab(body.lab_state);
+      setMessage(`${body.configuration.mode_label} · payment.failed accepted · ${actionSummary(body.result.decision.action, body.result.decision.retry_after_seconds, body.result.decision.recommended_method)} · ${body.result.execution?.status ?? "no execution"}`);
+      const latestRecoveries = await refresh();
+      const current = latestRecoveries.find(row => row.id === body.result.failure_id);
+      if (current) await inspectRecovery(current);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Test Lab failure could not be created."); }
+    finally { setLabRunning(false); }
+  };
+
+  const completeLabCheckout = async (outcome: "success" | "failure") => {
+    if (!labCheckout) return;
+    setLabRunning(true); setError(null);
+    try {
+      const response = await fetch(`${API}/api/razorpay-lab/executions/${labCheckout.id}/complete`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome, method: labCheckoutMethod }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "Mock checkout could not be completed.");
+      setRazorpayLab(body.lab_state); setLabCheckout(null);
+      setMessage(outcome === "success" ? "Local mock payment.captured accepted · mock recovery confirmed separately from Razorpay-confirmed GMV." : "Mock payment failed · Payment Link remains PENDING · recovered amount remains zero.");
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Mock checkout could not be completed."); }
+    finally { setLabRunning(false); }
+  };
+
+  const openLabAudit = async (execution: LabExecution) => {
+    const row = recoveries.find(recovery => recovery.id === execution.failure_id);
+    if (row) await inspectRecovery(row, true);
+  };
+
   const pauseTour = async (milliseconds: number) => {
     for (let elapsed = 0; elapsed < milliseconds && !demoTourCancelled.current; elapsed += 250) {
       await new Promise(resolve => window.setTimeout(resolve, 250));
@@ -498,14 +561,18 @@ function App() {
   const selectedOutcomeLabel = escalationRequired ? "HUMAN REVIEW" : selected?.execution_mode === "simulation" ? `SIMULATED ${selected.outcome ?? "PENDING"}` : selected?.execution_status === "SUCCESS" ? "PROVIDER CONFIRMED" : selected?.outcome ?? "PENDING";
   const sortedRecoveries = [...recoveries].sort((a, b) => activitySort === "risk" ? (b.risk_score ?? 0) - (a.risk_score ?? 0) : activitySort === "value" ? b.amount - a.amount : 0);
   const visibleRecoveries = showAllRecoveries ? sortedRecoveries : sortedRecoveries.slice(0, 10);
+  const labPendingCount = razorpayLab?.executions.filter(item => item.status === "PENDING").length ?? 0;
+  const labSuccessCount = razorpayLab?.executions.filter(item => item.status === "SUCCESS").length ?? 0;
+  const labMockRecovered = razorpayLab?.executions.filter(item => item.provider === "razorpay_mock" && item.status === "SUCCESS").reduce((sum, item) => sum + item.amount, 0) ?? 0;
 
   return <div className="app-shell">
     <nav className="topbar" aria-label="Primary navigation">
       <a className="brand" href="#overview"><BrandMark /><span>Waggle <b>Recover</b></span></a>
-      <div className="nav-links"><a href="#simulator">Simulator</a><a href="#authority">Authority</a><a href="#batch">Batch</a><a href="#policy">Policy</a><a href="#benchmark">Benchmark</a></div>
+      <div className="nav-links"><a href="#simulator">Simulator</a><a href="#razorpay-lab">Test Lab</a><a href="#authority">Authority</a><a href="#batch">Batch</a><a href="#benchmark">Benchmark</a></div>
       <span className={`service-status ${error ? "offline" : ""}`}><i />{error ? "Needs attention" : "Local system live"}</span>
     </nav>
     {demoTourRunning && <div className="demo-tour-status" role="status" aria-live="polite"><span className="spinner" /> <b>Demo tour running</b><span>{demoTourStep}</span><button onClick={stopDemoTour}>Stop tour</button></div>}
+    {labCheckout && <div className="checkout-backdrop" role="dialog" aria-modal="true" aria-label="Local Razorpay mock checkout"><div className="mock-checkout"><header><div className="razorpay-wordmark"><i>R</i><span>Razorpay</span></div><span>TEST MODE</span></header><div className="checkout-merchant"><small>Paying</small><strong>Waggle Recover Demo</strong><b>{money(labCheckout.amount)}</b><p>Recovery Payment Link · {labCheckout.provider_execution_id}</p></div><div className="checkout-methods"><span>Choose a payment method</span><div>{[["upi", "UPI"], ["card", "Card"], ["netbanking", "Netbanking"], ["wallet", "Wallet"]].map(([key, label]) => <button className={labCheckoutMethod === key ? "active" : ""} onClick={() => setLabCheckoutMethod(key)} key={key}><i>{key === "upi" ? "U" : key === "card" ? "▣" : key === "netbanking" ? "⌂" : "◫"}</i>{label}</button>)}</div></div><div className="mock-bank-page"><span>LOCAL MOCK PAYMENT PAGE</span><strong>{labCheckoutMethod === "upi" ? "Use success@razorpay in real Test Mode" : `Razorpay ${labCheckoutMethod} test flow`}</strong><p>This in-app mock never contacts a bank and never moves real money. It emits a signed local webhook so you can demonstrate success and failure safely.</p></div><div className="checkout-actions"><button disabled={labRunning} className="mock-fail" onClick={() => void completeLabCheckout("failure")}>Simulate failure</button><button disabled={labRunning} className="mock-success" onClick={() => void completeLabCheckout("success")}>{labRunning ? "Processing…" : `Pay ${money(labCheckout.amount)} in Test Mode`}</button></div><button className="checkout-close" onClick={() => setLabCheckout(null)}>×</button></div></div>}
 
     <main>
       <section className="hero" id="overview">
@@ -591,6 +658,17 @@ function App() {
             </> : <div className="inspector-empty"><div className="empty-glyph"><span>F</span><i /><span>M</span><i /><span>D</span></div><strong>No decision selected</strong><p>Run <b>Stale Card Trap</b> to see an old success retrieved, invalidated, and excluded before the final action.</p></div>}
           </article>
         </div>
+      </section>
+
+      <section className="razorpay-lab-section" id="razorpay-lab">
+        <div className="razorpay-lab-head"><div><p className="section-index">RAZORPAY TEST LAB</p><div className="razorpay-wordmark"><i>R</i><span>Razorpay</span><b>Test Lab</b></div><p>Full recovery-loop demo using the normal Waggle pipeline and Razorpay-compatible Test Mode semantics.</p></div><div className={`lab-mode ${razorpayLab?.configuration.real_test_mode_connected ? "connected" : "mock"}`}><i /><span>{razorpayLab?.configuration.mode_label ?? "Checking Test Mode…"}</span><small>NO REAL MONEY</small></div></div>
+        <div className="lab-proof-bar"><span><b>payment.failed</b> signed input</span><i>→</i><span><b>Waggle</b> authority</span><i>→</i><span><b>PolicyEngine</b> final</span><i>→</i><span><b>Payment Link</b> pending</span><i>→</i><span><b>payment.captured</b> confirms</span></div>
+        <div className="lab-dashboard">
+          <article className="lab-composer"><div className="lab-card-title"><span>01</span><div><strong>Inject payment failure</strong><small>Signed Test Lab webhook</small></div></div><label>Failure preset<select value={labFailureCode} onChange={event => setLabFailureCode(event.target.value)}><option value="expired_card">Expired card</option><option value="issuer_unavailable">Issuer unavailable</option><option value="insufficient_funds">Insufficient balance</option><option value="card_blocked">Card blocked</option></select></label><div className="lab-field-row"><label>Amount (₹)<input type="number" min="1" max="1000000" value={labAmount} onChange={event => setLabAmount(Number(event.target.value))} /></label><label>Failed method<select value={labMethod} onChange={event => setLabMethod(event.target.value)}><option value="card">Card</option><option value="upi">UPI</option><option value="netbanking">Netbanking</option><option value="wallet">Wallet</option></select></label></div><label>Customer alias<input value={labCustomer} onChange={event => setLabCustomer(event.target.value)} /></label><button className="razorpay-action" disabled={labRunning} onClick={() => void createLabFailure()}>{labRunning ? <><span className="spinner dark" /> Sending event</> : <>Send payment.failed <span>→</span></>}</button><p className="lab-disclosure">{razorpayLab?.configuration.real_test_mode_connected ? `Creates a real Razorpay Test Mode Payment Link through the API. Test limit: ${razorpayLab.configuration.payment_link_test_limit} links per business.` : "No Test API keys detected. The local provider creates an isolated mock Payment Link and never contributes to Razorpay-confirmed GMV."}</p></article>
+          <article className="lab-status-card"><div className="lab-card-title"><span>02</span><div><strong>Recovery operations</strong><small>Payment Links and confirmation state</small></div></div><div className="lab-kpis"><div><span>Links</span><b>{razorpayLab?.executions.length ?? 0}</b></div><div><span>Pending</span><b>{labPendingCount}</b></div><div><span>Confirmed</span><b>{labSuccessCount}</b></div><div><span>Mock only</span><b>{money(labMockRecovered)}</b></div></div><div className="lab-execution-list">{razorpayLab?.executions.slice(0, 6).map(execution => <div className={`lab-execution ${execution.status.toLowerCase()}`} key={execution.id}><div><span className="lab-provider">{execution.provider_label}</span><strong>{actionSummary(execution.action, execution.retry_after_seconds, execution.recommended_method)}</strong><small>{execution.provider_execution_id} · {money(execution.amount)}</small></div><div><span className={`lab-status ${execution.status.toLowerCase()}`}>{execution.status}</span>{execution.status === "PENDING" && execution.provider === "razorpay_mock" && <button onClick={() => { setLabCheckout(execution); setLabCheckoutMethod(execution.recommended_method ?? "upi"); }}>Open mock checkout</button>}{execution.status === "PENDING" && execution.provider === "razorpay_test" && execution.public_url && <a target="_blank" rel="noreferrer" href={execution.public_url}>Open Razorpay Checkout</a>}<button onClick={() => void openLabAudit(execution)}>Audit graph</button></div><p>{execution.confirmation_label}</p></div>)}{!razorpayLab?.executions.length && <div className="lab-empty"><span>◌</span><strong>No Test Lab executions yet</strong><small>Send an expired-card failure to create the first bounded Payment Link.</small></div>}</div></article>
+        </div>
+        <div className="lab-webhooks"><div className="lab-card-title"><span>03</span><div><strong>Webhook event stream</strong><small>Safe metadata only · raw payload and secrets stay server-side</small></div></div><div className="webhook-stream">{razorpayLab?.webhooks.slice(0, 8).map(item => <div key={item.provider_event_id}><span className={`webhook-icon ${item.event_type.includes("captured") ? "captured" : "failed"}`}>{item.event_type.includes("captured") ? "✓" : "!"}</span><strong>{item.event_type}</strong><small>{item.payment_id}</small><span>{item.signature_valid ? "SIGNATURE VALID" : "REJECTED"}</span><time>{new Date(item.created_at).toLocaleTimeString()}</time></div>)}{!razorpayLab?.webhooks.length && <p>No Test Lab webhooks recorded.</p>}</div></div>
+        <div className="lab-boundary"><b>Authority boundary</b><span>{razorpayLab?.configuration.capture_authority ?? "Loading capture authority…"}</span><small>Local mock success is labeled separately and is never included in provider-confirmed Razorpay GMV.</small></div>
       </section>
 
       {agentTrace && <section ref={agentTraceRef} className={`agent-trace ${agentTrace.agent_fallback ? "fallback-trace" : ""}`}><div className="trace-heading"><div><p className="section-index">CONSTRAINED MODEL TRACE</p><h2>Qwen proposes. Policy decides.</h2></div><div className="model-chip"><span>Groq · {agentTrace.model}</span><small>{agentTrace.model_latency_ms} ms</small></div></div>{agentTrace.agent_fallback && <div className="fallback-banner"><strong>Safe fallback used</strong><span>{agentTrace.fallback_reason}</span></div>}<div className="trace-stages">{agentTrace.stages.map((stage, index) => <article key={`${stage.key}-${index}`} className={`trace-stage ${stage.status}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.label}</strong><p>{stage.detail}</p></div></article>)}</div><div className="trace-result"><div><span>Model candidate</span><strong>{actionSummary(agentTrace.candidate_action, agentTrace.candidate_retry_after_seconds, agentTrace.candidate_recommended_method)}</strong><small>{agentTrace.candidate_reason}</small></div><i>→</i><div><span>Policy Guard</span><strong>{agentTrace.policy_result ?? "—"}</strong><small>deterministic constraints</small></div><i>→</i><div><span>Recorded action</span><strong>{actionSummary(agentTrace.final_action, agentTrace.final_retry_after_seconds, agentTrace.final_recommended_method)}</strong><small>model never moves money</small></div></div></section>}

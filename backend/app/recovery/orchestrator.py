@@ -522,7 +522,11 @@ class RecoveryOrchestrator:
             "updated_attempts": 1,
             "recovered_amount": event.amount,
             "outcome_waggle_nodes": [outcome_node_id],
-            "confirmation": "CONFIRMED BY RAZORPAY WEBHOOK",
+            "confirmation": (
+                "CONFIRMED BY LOCAL MOCK WEBHOOK"
+                if execution["provider"] == "razorpay_mock"
+                else "CONFIRMED BY RAZORPAY WEBHOOK"
+            ),
         }
 
     def _handle_legacy_capture(self, event: NormalizedPaymentEvent) -> dict[str, Any]:

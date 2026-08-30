@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     razorpay_webhook_secret: str = ""
     razorpay_enabled: bool = False
     razorpay_test_execution_enabled: bool = False
+    razorpay_mock_lab_enabled: bool = True
     razorpay_api_base_url: str = "https://api.razorpay.com/v1"
     razorpay_payment_link_expiry_seconds: int = 86400
     webhook_replay_window_seconds: int = 86400

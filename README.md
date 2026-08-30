@@ -62,6 +62,20 @@ Malformed output, timeout, invented method, unknown citation, or provider failur
 
 ## RAZORPAY TEST MODE EXECUTION
 
+The dashboard includes an in-app **Razorpay Test Lab**. It composes a signed
+`payment.failed` test event, passes it through the same Waggle retrieval,
+temporal-authority, policy, execution, and audit pipeline as the webhook API,
+then shows the resulting Payment Link and webhook stream in the UI.
+
+Without credentials, the lab uses a clearly labeled local Razorpay-compatible
+mock checkout. Its `payment.captured` event confirms that mock execution but is
+never included in provider-confirmed Razorpay GMV. With the Test Mode
+configuration below, eligible recoveries create a real Standard Payment Link
+through Razorpay's Test Mode API; finish those payments on Razorpay's hosted
+mock Checkout and let the verified webhook confirm recovery. No real money is
+charged in either mode. Razorpay currently limits Standard Payment Links in
+Test Mode to 30 per business.
+
 The optional provider uses Razorpay's official Standard Payment Link API, `POST /v1/payment_links`. It sends amount, currency, `accept_partial=false`, an expiry, unique reference, description, non-sensitive recovery identifiers in notes, and notification settings. No PAN, CVV, raw payment credentials, customer phone/email, API key, or webhook secret is stored in the execution or returned by the API.
 
 Enable it only with Test Mode credentials:
@@ -72,11 +86,18 @@ RAZORPAY_TEST_EXECUTION_ENABLED=true
 RAZORPAY_KEY_ID=rzp_test_...
 RAZORPAY_KEY_SECRET=...
 RAZORPAY_WEBHOOK_SECRET=...
+RAZORPAY_MOCK_LAB_ENABLED=true
 ```
 
 Live-key IDs are rejected. Eligible, policy-approved `SUGGEST_METHOD` and `CUSTOMER_NUDGE` decisions may create one idempotent Payment Link per episode/execution type. Creation persists `PENDING`, returns a safe public URL, and records zero recovered money. Missing configuration leaves the simulator functional.
 
 A verified `payment.captured` webhook is authoritative. The handler verifies HMAC, enforces a replay window, deduplicates provider events, resolves the exact execution/episode, checks amount and currency, and only then records `SUCCESS` and recovered amount. An invalid signature, unrelated payment, mismatch, provider error, or merely created link leaves recovery unconfirmed.
+
+To demo the full loop, open **Test Lab**, send a preset failed-payment event,
+inspect the pending recovery operation, and complete the local mock checkout.
+Try the failure button first to verify the link stays pending, then success to
+see the signed capture, exact execution correlation, and audit graph. When Test
+Mode credentials are connected, the operation instead opens Razorpay Checkout.
 
 See [the Test Mode walkthrough](docs/RAZORPAY_TEST_WEBHOOK_DEMO.md) and Razorpay's official [Payment Link create API](https://razorpay.com/docs/api/payments/payment-links/create-standard/), [fetch API](https://razorpay.com/docs/api/payments/payment-links/fetch-all-standard/), and [payment webhook documentation](https://razorpay.com/docs/webhooks/payments/).
 

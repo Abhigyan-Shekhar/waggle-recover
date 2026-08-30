@@ -21,6 +21,7 @@ from app.recovery.batch import run_curated_batch
 from app.recovery.execution_provider import RazorpayTestExecutionProvider, RecoveryExecutionProvider
 from app.recovery.handoff import N8nEscalationHandoff
 from app.recovery.orchestrator import RecoveryOrchestrator
+from app.recovery.razorpay_lab import RazorpayTestLab
 
 
 class FakeExecutionProvider(RecoveryExecutionProvider):
@@ -315,3 +316,54 @@ def test_malformed_policy_is_rejected_cleanly(tmp_path):
             PolicyUpdate(min_retry_interval_seconds=900, max_retry_interval_seconds=300),
             adapter=adapter, orchestrator=orchestrator, _authorized=None,
         ))
+
+
+def test_local_razorpay_lab_runs_normal_pipeline_and_confirms_only_mock_capture(tmp_path):
+    orchestrator, adapter, db = setup(tmp_path)
+    settings = Settings(waggle_embedding_model="fake", razorpay_mock_lab_enabled=True)
+    lab = RazorpayTestLab(
+        settings=settings, db=db, adapter=adapter, orchestrator=orchestrator,
+    )
+    created = lab.create_failure(
+        amount=225000, customer_id="CUST-LAB", merchant_id="MERCH-LAB",
+        method="card", instrument_id="card_9988", failure_code="expired_card",
+        failure_description="Card expired",
+    )
+    execution = created["result"]["execution"]
+    assert created["configuration"]["mode"] == "local_mock"
+    assert created["webhook"]["signature_valid"] is True
+    assert created["result"]["decision"]["action"] == "SUGGEST_METHOD"
+    assert execution["provider"] == "razorpay_mock"
+    assert execution["status"] == "PENDING"
+    assert created["result"]["outcome"]["recovered_amount"] == 0
+
+    completed = lab.complete_mock_execution(execution["id"], outcome="success", method="upi")
+    assert completed["result"]["confirmation"] == "CONFIRMED BY LOCAL MOCK WEBHOOK"
+    assert completed["result"]["recovered_amount"] == 225000
+    state_execution = next(item for item in completed["lab_state"]["executions"] if item["id"] == execution["id"])
+    assert state_execution["status"] == "SUCCESS"
+    assert state_execution["confirmation_label"] == "CONFIRMED BY LOCAL MOCK WEBHOOK"
+    assert db.get_overview_metrics()["operational"]["provider_confirmed_recovered_gmv"] == 0
+
+
+def test_local_mock_failed_checkout_stays_pending_and_duplicate_capture_is_idempotent(tmp_path):
+    orchestrator, adapter, db = setup(tmp_path)
+    lab = RazorpayTestLab(
+        settings=Settings(waggle_embedding_model="fake"), db=db,
+        adapter=adapter, orchestrator=orchestrator,
+    )
+    created = lab.create_failure(
+        amount=99000, customer_id="CUST-LAB-FAIL", merchant_id="MERCH-LAB",
+        method="card", instrument_id="card_1111", failure_code="expired_card",
+        failure_description="Card expired",
+    )
+    execution_id = created["result"]["execution"]["id"]
+    failed = lab.complete_mock_execution(execution_id, outcome="failure", method="upi")
+    assert failed["result"]["recovered_amount"] == 0
+    assert db.get_execution_for_confirmation(execution_id=execution_id)["status"] == "PENDING"
+
+    first = lab.complete_mock_execution(execution_id, outcome="success", method="upi")
+    duplicate = lab.complete_mock_execution(execution_id, outcome="success", method="upi")
+    assert first["result"]["updated_attempts"] == 1
+    assert duplicate["status"] == "duplicate"
+    assert len(db.get_recent_mock_webhooks()) == 3

@@ -384,7 +384,11 @@ class RecoveryExecution(BaseModel):
         return {
             "id": self.id,
             "provider": self.provider,
-            "provider_label": "Razorpay Test Mode" if self.provider == "razorpay_test" else self.provider,
+            "provider_label": (
+                "Razorpay Test Mode" if self.provider == "razorpay_test"
+                else "Local Razorpay Mock" if self.provider == "razorpay_mock"
+                else self.provider
+            ),
             "execution_type": self.execution_type,
             "provider_execution_id": self.provider_execution_id,
             "public_url": self.public_url,

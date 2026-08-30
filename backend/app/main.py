@@ -112,11 +112,13 @@ def create_app() -> FastAPI:
     from app.api.memory_graph import router as memory_graph_router
     from app.api.payments import router as payments_router
     from app.api.policies import router as policies_router
+    from app.api.razorpay_lab import router as razorpay_lab_router
     from app.api.simulator import router as simulator_router
     from app.api.webhooks import router as webhooks_router
 
     app.include_router(payments_router, prefix="/api/payments", tags=["payments"])
     app.include_router(policies_router, prefix="/api/policies", tags=["policies"])
+    app.include_router(razorpay_lab_router, prefix="/api/razorpay-lab", tags=["razorpay-test-lab"])
     app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
     app.include_router(decisions_router, prefix="/api/decisions", tags=["decisions"])
     app.include_router(batches_router, prefix="/api/batches", tags=["batches"])

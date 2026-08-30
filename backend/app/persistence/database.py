@@ -610,6 +610,49 @@ class Database:
         row = self.execute_one("SELECT * FROM recovery_executions WHERE decision_id=?", (decision_id,))
         return dict(row) if row else None
 
+    def get_recent_executions(self, limit: int = 30) -> list[dict[str, Any]]:
+        rows = self.execute(
+            """
+            SELECT re.*, pf.failure_code, pf.method AS failed_method,
+                   rd.action, rd.recommended_method, rd.retry_after_seconds,
+                   rd.policy_result, rd.human_review_required,
+                   ra.outcome AS attempt_outcome, ra.recovered_amount
+            FROM recovery_executions re
+            JOIN payment_failures pf ON pf.id=re.failure_id
+            JOIN recovery_decisions rd ON rd.id=re.decision_id
+            JOIN recovery_attempts ra ON ra.id=re.attempt_id
+            ORDER BY re.created_at DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in rows]
+
+    def get_recent_mock_webhooks(self, limit: int = 40) -> list[dict[str, Any]]:
+        rows = self.execute(
+            """
+            SELECT provider_event_id, event_type, payment_id, signature_valid,
+                   processed, created_at
+            FROM webhook_events
+            WHERE provider_event_id LIKE 'evt_mock_%'
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in rows]
+
+    def get_recent_webhooks(self, limit: int = 40) -> list[dict[str, Any]]:
+        """Return safe webhook metadata for the Test Lab event stream."""
+        rows = self.execute(
+            """
+            SELECT provider_event_id, event_type, payment_id, signature_valid,
+                   processed, created_at
+            FROM webhook_events
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in rows]
+
     def get_execution_for_confirmation(
         self, *, execution_id: str = "", provider_execution_id: str = ""
     ) -> dict[str, Any] | None:

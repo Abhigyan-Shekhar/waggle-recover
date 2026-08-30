@@ -39,6 +39,26 @@ class SimulationExecutionProvider(RecoveryExecutionProvider):
         return execution.model_copy(update={"provider": self.name, "status": "PENDING", "provider_status": "simulated"})
 
 
+class RazorpayMockExecutionProvider(RecoveryExecutionProvider):
+    """Local Test Lab provider. It never calls Razorpay or moves money."""
+
+    name = "razorpay_mock"
+
+    def configured(self) -> bool:
+        return True
+
+    def create(self, execution: RecoveryExecution) -> RecoveryExecution:
+        token = hashlib.sha256(execution.id.encode()).hexdigest()[:18]
+        return execution.model_copy(update={
+            "provider": self.name,
+            "status": "PENDING",
+            "provider_execution_id": f"plink_mock_{token}",
+            "public_url": f"/mock-checkout/{execution.id}",
+            "provider_status": "created",
+            "updated_at": datetime.now(UTC),
+        })
+
+
 class RazorpayTestExecutionProvider(RecoveryExecutionProvider):
     """Creates only Razorpay Test Mode Payment Links using test credentials."""
 
