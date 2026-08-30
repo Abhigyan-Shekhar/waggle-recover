@@ -24,7 +24,7 @@ Waggle semantic retrieval
       ↓
 Temporal / supersession validation
       ↓
-Trusted evidence + explicitly rejected memory
+Trusted evidence + rejected-memory count/categories
       ↓
 Recency-weighted Bayesian strategy priors
       ↓
@@ -148,11 +148,11 @@ The corrected 200-case benchmark at seed 42 uses equivalent episode-scoped retry
 
 | System | Parameter-aware action accuracy | Recovery success | Simulated GMV recovery | Exact stale-evidence rejection |
 | --- | ---: | ---: | ---: | ---: |
-| Waggle Recover | **94%** | **87%** | **86.9%** | **100%** |
+| Waggle Recover | **100%** | **87%** | **86.9%** | **100%** |
 | Contextual History | 76% | 76% | 76.9% | 0% |
 | Blind Fixed Retry | 43% | 43% | 48.0% | 0% |
 
-The remaining 6% error is concentrated in `failed_alternative` cases. The system safely avoids an unsafe action but escalates where the benchmark expects a different non-recovering action; this is measured as an unnecessary escalation rather than hidden by unequal retry budgets.
+The former 6% `failed_alternative` error bucket was an orchestration defect, not a retrieval or benchmark-label problem. In all 12/200 main cases and 60/1,000 robustness cases, two failed method-switch attempts correctly led the provider to `STOP`; the orchestrator then rewrote that terminal action to `ESCALATE` because the retry count was one below the configured limit. `STOP` now passes through `PolicyEngine` unchanged. The scenario generator, category weights, action outcomes, and ground-truth actions were not changed.
 
 ### Separate robustness evaluation
 
@@ -164,11 +164,11 @@ WAGGLE_EMBEDDING_MODEL=fake python -c \
   'from app.evaluation.robustness import run_robustness_evaluation; run_robustness_evaluation(cache_path="data/evaluations/robustness.json")'
 ```
 
-The verified System C result is **94% parameter-aware action accuracy**, **87% recovery success**, **87.38% simulated GMV recovery**, **100% stale rejection**, **0% unsafe-action rate**, **6% unnecessary-escalation rate**, and **0% policy-violation rate**. These are seeded simulator results, not production performance or production GMV.
+The verified System C result is **100% parameter-aware action accuracy**, **87% recovery success**, **87.38% simulated GMV recovery**, **100% stale rejection**, **0% unsafe-action rate**, **0% unnecessary-escalation rate**, and **0% policy-violation rate**. These are seeded simulator results, not production performance or production GMV.
 
 ### Temporal-authority ablation
 
-The controlled 200-case ablation now runs the same Waggle retrieval, scoring, ranking, decision, policy, and retry-budget pipeline twice; only temporal validation is switched OFF versus ON. With validation OFF it scored **83% action accuracy**, **76.92% simulated GMV recovery**, and used known stale evidence on **4.55% of stale-memory cases**. With validation ON it scored **94% action accuracy**, **86.92% simulated GMV recovery**, **0% stale use**, and **100% stale rejection**. This isolates the safety and accuracy contribution of temporal authority validation.
+The controlled 200-case ablation now runs the same Waggle retrieval, scoring, ranking, decision, policy, and retry-budget pipeline twice; only temporal validation is switched OFF versus ON. With validation OFF it scored **89% action accuracy**, **76.92% simulated GMV recovery**, and used known stale evidence on **4.55% of stale-memory cases**. With validation ON it scored **100% action accuracy**, **86.92% simulated GMV recovery**, **0% stale use**, and **100% stale rejection**. This isolates the safety and accuracy contribution of temporal authority validation.
 
 ```bash
 cd backend
@@ -186,7 +186,7 @@ The structured report is cached at `backend/data/evaluations/qwen.json`. It cont
 
 ### Recovery episodes, escalation, and risk priority
 
-Retry budgets are attached to a stable recovery episode, preferring subscription, mandate, invoice, order, then payment identity. Independent payments do not share attempts; repeated events in the same episode do. When attempts are exhausted, policy leaves no safe action, evidence materially conflicts, confidence falls below a review threshold, or merchant policy requires review, the system persists an `EscalationRecord` in SQLite and Waggle. The outcome is `SKIPPED`, human review is required, and money movement is `NONE`.
+Retry budgets are attached to a stable recovery episode, preferring subscription, mandate, invoice, order, then payment identity. Independent payments do not share attempts; repeated events in the same episode do. When the configured attempt budget is exhausted, the deterministic provider originates `ESCALATE`; policy never derives escalation by rewriting `STOP`. Material evidence conflicts, low confidence, and merchant review requirements can also produce an escalation. The system persists an `EscalationRecord` in SQLite and Waggle; the outcome is `SKIPPED`, human review is required, and money movement is `NONE`.
 
 An explainable 0–100 risk score uses payment value, attempt count, failure class, active instruments, authoritative success history, and conflicts. It prioritizes the operations queue only and cannot bypass `PolicyEngine`.
 
@@ -194,7 +194,7 @@ An explainable 0–100 risk score uses payment value, attempt count, failure cla
 
 - Payment instrument aliases only: no PAN, CVV, banking credentials, or secrets.
 - The allowed action set is closed: `RETRY_NOW`, `RETRY_AFTER`, `SUGGEST_METHOD`, `CUSTOMER_NUDGE`, `WAIT_NEXT_CYCLE`, `ESCALATE`, and `STOP`.
-- A policy layer can allow, modify, or block a candidate decision.
+- A policy layer can allow, modify, or block an automation candidate. `STOP` bypasses substitution rules and is intrinsically terminal.
 - Only evidence proven `CURRENT` enters trusted memory; `UNKNOWN`, stale, superseded, and conflicting evidence fail closed into the audit trail.
 - Qwen receives accepted evidence plus only the rejected count and rejection categories. Rejected IDs, labels, actions, outcomes, instruments, timing, and reasons remain audit-only.
 - Agent traces contain structured summaries and latency only—never raw prompts, secrets, or hidden chain-of-thought.

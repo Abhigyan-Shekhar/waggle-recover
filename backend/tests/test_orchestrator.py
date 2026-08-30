@@ -85,6 +85,42 @@ class TestOrchestratorBasic:
         assert second["terminal_state"]["money_movement"] == "NONE"
         assert db.get_attempt_count_for_episode(first["recovery_episode"]["id"]) == attempts_before
 
+    def test_stop_bypasses_policy_rules_that_could_replace_it(self, tmp_setup):
+        orchestrator, _, _ = tmp_setup
+
+        class StopProvider:
+            mode = "test"
+
+            def decide_with_trace(self, bundle):
+                return RecoveryDecision(
+                    failure_id=bundle.current_failure.id,
+                    action=RecoveryAction.STOP,
+                    confidence=1.0,
+                    reason="Terminal safety stop",
+                ), {"decision_mode": "test"}
+
+        policy = MerchantPolicy(
+            merchant_id="MERCH-TERMINAL-STOP",
+            max_recovery_attempts=0,
+            allowed_actions=[RecoveryAction.RETRY_AFTER],
+            requires_human_review=True,
+        )
+        result = orchestrator.process_event(
+            event=_make_event(
+                payment_id="pay_terminal_stop_policy",
+                merchant_id=policy.merchant_id,
+            ),
+            merchant_policy=policy,
+            simulate=True,
+            decision_provider=StopProvider(),
+        )
+
+        assert result["decision"]["action"] == "STOP"
+        assert result["decision"]["policy_result"] == "ALLOW"
+        assert "terminal_stop" in result["decision"]["policy_note"]
+        assert result["outcome"]["outcome"] == "SKIPPED"
+        assert result["escalation"] is None
+
     def test_real_execution_is_pending_until_capture(self, tmp_setup):
         orchestrator, _, db = tmp_setup
         event = _make_event(payment_id="pay_external_pending")
@@ -232,7 +268,7 @@ class TestPolicyEnforcement:
 
         assert result["metrics"]["recent_customer_merchant_activity"] >= 11
 
-    def test_repeated_attempts_for_same_payment_escalate_to_human_review(self, tmp_setup):
+    def test_repeated_attempts_for_same_payment_stop_irreversibly(self, tmp_setup):
         orchestrator, _, _ = tmp_setup
         policy = MerchantPolicy(
             merchant_id="MERCH-REPEATED",
@@ -256,24 +292,14 @@ class TestPolicyEnforcement:
         ]
 
         assert [item["metrics"]["attempt_count_for_current_failure"] for item in results] == [0, 1, 2, 3]
-        assert results[-1]["decision"]["action"] == "ESCALATE"
-        assert results[-1]["decision"]["policy_result"] == "BLOCK"
-        assert results[-1]["decision"]["human_review_required"] is True
+        assert results[2]["decision"]["action"] == "STOP"
+        assert results[2]["decision"]["policy_result"] == "ALLOW"
+        assert results[-1]["status"] == "terminal"
+        assert results[-1]["decision"]["action"] == "STOP"
+        assert results[-1]["terminal_state"]["action"] == "STOP"
         assert results[-1]["outcome"]["outcome"] == "SKIPPED"
         assert results[-1]["outcome"]["recovered_amount"] == 0
-        escalation = results[-1]["escalation"]
-        assert escalation["action"] == "ESCALATE"
-        assert escalation["human_review_required"] is True
-        assert escalation["reason"] == "Maximum recovery attempts (3) reached"
-        assert escalation["merchant_id"] == policy.merchant_id
-        assert escalation["customer_id"] == "CUST-REPEATED"
-        assert escalation["failure_code"] == "issuer_unavailable"
-        assert escalation["attempt_count"] == escalation["max_automated_attempts"] == 3
-        assert escalation["last_safe_action"] == "RETRY_AFTER"
-        assert escalation["evidence_ids"]  # retrieved provenance is persisted for the reviewer
-        assert escalation["policy_result"] == "BLOCK"
-        assert escalation["money_movement"] == "NONE"
-        assert escalation["recommended_next_step"] == "Manual review / customer outreach"
+        assert results[-1]["escalation"] is None
 
     def test_different_payments_in_same_order_share_episode_budget(self, tmp_setup):
         orchestrator, _, _ = tmp_setup

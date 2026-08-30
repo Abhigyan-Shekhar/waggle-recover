@@ -1,8 +1,8 @@
 {
   "improvements": {
-    "c_vs_a_accuracy": 0.51,
+    "c_vs_a_accuracy": 0.57,
     "c_vs_a_gmv_recovery": 0.3896,
-    "c_vs_b_accuracy": 0.18,
+    "c_vs_b_accuracy": 0.24,
     "c_vs_b_gmv_recovery": 0.1,
     "stale_rejection_improvement_vs_b": 1.0
   },
@@ -180,9 +180,9 @@
       "total_recovered_amount": 126150000
     },
     "system_c": {
-      "action_accuracy": 0.94,
-      "action_accuracy_pct": 94.0,
-      "avg_latency_ms": 26.21,
+      "action_accuracy": 1.0,
+      "action_accuracy_pct": 100.0,
+      "avg_latency_ms": 6.89,
       "category_results": {
         "conflicting_history": {
           "correct": 8,
@@ -200,7 +200,7 @@
           "total": 17
         },
         "failed_alternative": {
-          "correct": 0,
+          "correct": 12,
           "success": 0,
           "total": 12
         },
@@ -245,11 +245,11 @@
           "total": 30
         }
       },
-      "evidence_accepted_total": 223,
+      "evidence_accepted_total": 228,
       "evidence_discarded_total": 23,
       "memory_contribution_count": 105,
       "name": "System C: Waggle Recover",
-      "p95_latency_ms": 35.27,
+      "p95_latency_ms": 13.13,
       "recovery_rate_gmv": 0.8692,
       "recovery_rate_gmv_pct": 86.9,
       "scenario_count": 200,

@@ -284,8 +284,8 @@
           "unsafe_action_rate": 0.0
         },
         "failed_alternative": {
-          "action_accuracy": 0.0,
-          "correct": 0,
+          "action_accuracy": 1.0,
+          "correct": 60,
           "total": 60,
           "unsafe": 0,
           "unsafe_action_rate": 0.0
@@ -354,13 +354,13 @@
           "unsafe_action_rate": 0.0
         }
       },
-      "parameter_aware_action_accuracy": 0.94,
+      "parameter_aware_action_accuracy": 1.0,
       "policy_violation_rate": 0.0,
       "recovery_success": 0.87,
       "scenario_count": 1000,
       "simulated_gmv_recovery": 0.8738,
       "stale_rejection": 1.0,
-      "unnecessary_escalation_rate": 0.06,
+      "unnecessary_escalation_rate": 0.0,
       "unsafe_action_rate": 0.0
     }
   }

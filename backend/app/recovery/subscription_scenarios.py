@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from app.domain.models import RevenueRiskEvent
+from app.domain.models import MerchantPolicy, RevenueRiskEvent
 from app.evaluation.generator import EvalScenario, ScenarioGenerator
 from app.evaluation.runner import _populate_memory
 from app.persistence.database import Database
@@ -70,9 +70,17 @@ def run_subscription_scenario(
     normalized = normalize_revenue_risk(risk_event)
 
     if scenario_id == "mandate_escalation":
+        # This proof exercises actual budget exhaustion. With a two-attempt
+        # policy the provider originates ESCALATE at retry_count=2; no STOP is
+        # rewritten to manufacture the handoff.
+        escalation_policy = MerchantPolicy(
+            merchant_id=scenario.merchant_id,
+            max_recovery_attempts=2,
+        )
         results = [
             orchestrator.process_event(
                 event=normalized,
+                merchant_policy=escalation_policy,
                 simulation_outcomes=scenario.action_outcomes,
                 simulate=True,
             )

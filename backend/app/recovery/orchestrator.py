@@ -221,19 +221,6 @@ class RecoveryOrchestrator:
         candidate.strategy_priors = bundle.strategy_priors
         decision_latency_ms = (time.time() - decision_start) * 1000
 
-        # A provider's quiet STOP at the final automated attempt is promoted
-        # to an explicit human handoff before either terminal state is stored.
-        # Once persisted, both STOP and ESCALATE remain irreversible.
-        if (
-            candidate.action == RecoveryAction.STOP
-            and retry_count >= max(0, policy.max_recovery_attempts - 1)
-        ):
-            candidate.action = RecoveryAction.ESCALATE
-            candidate.abstention_reason = f"Maximum recovery attempts ({policy.max_recovery_attempts}) reached"
-            candidate.reason = candidate.abstention_reason
-            candidate.retry_after_seconds = None
-            candidate.recommended_method = None
-
         # 8. Stage 2: Policy validation
         policy_result = self.policy_engine.validate(
             decision=candidate,
@@ -646,7 +633,9 @@ class RecoveryOrchestrator:
                 f"Decision confidence {decision.confidence:.0%} is below merchant threshold "
                 f"{policy.min_automatic_confidence:.0%}"
             )
-        if review_reason:
+        # STOP is already an absorbing safety state. Review policy may replace
+        # an automation candidate, but it must not reinterpret terminal STOP.
+        if review_reason and decision.action != RecoveryAction.STOP:
             decision.action = RecoveryAction.ESCALATE
             decision.abstention_reason = review_reason
             decision.reason = review_reason

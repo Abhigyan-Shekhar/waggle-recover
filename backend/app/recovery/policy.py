@@ -52,7 +52,7 @@ class PolicyEngine:
     Results:
     - ALLOW: proceed as-is
     - MODIFY: adjust action/timing to comply with policy
-    - BLOCK: action not allowed; substitute STOP
+    - BLOCK: autonomous action prohibited; orchestrator creates a human handoff
     """
 
     def validate(
@@ -62,6 +62,15 @@ class PolicyEngine:
         retry_count: int = 0,
         merchant_policy: MerchantPolicy | None = None,
     ) -> PolicyValidationResult:
+        # STOP is an absorbing safety decision, not an automation candidate.
+        # It must bypass every rule that can substitute or otherwise modify an
+        # action, including retry-budget and merchant allow-list checks.
+        if decision.action == RecoveryAction.STOP:
+            return PolicyValidationResult(
+                result=PolicyResult.ALLOW,
+                checks=[PolicyCheck("terminal_stop", True, "STOP is terminal and cannot be modified")],
+            )
+
         policy = merchant_policy or bundle.merchant_policy
         if policy is None:
             # No policy — allow with minimal constraint

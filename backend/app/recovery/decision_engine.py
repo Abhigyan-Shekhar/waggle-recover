@@ -60,6 +60,26 @@ class DeterministicDecisionProvider(DecisionProvider):
     def decide(self, bundle: EvidenceBundle) -> RecoveryDecision:
         failure = bundle.current_failure
 
+        # Exhausting the configured budget originates an explicit human handoff.
+        # This is intentionally decided here: PolicyEngine treats a provider's
+        # STOP as terminal and must never reinterpret it as another action.
+        max_attempts = (
+            bundle.merchant_policy.max_recovery_attempts
+            if bundle.merchant_policy is not None
+            else 3
+        )
+        if bundle.retry_count >= max_attempts:
+            return RecoveryDecision(
+                failure_id=failure.id,
+                action=RecoveryAction.ESCALATE,
+                confidence=0.90,
+                abstention_reason=f"Maximum recovery attempts ({max_attempts}) reached",
+                reason=f"Maximum recovery attempts ({max_attempts}) reached",
+                memory_contribution=bundle.memory_contribution,
+                evidence_references=bundle.accepted_evidence,
+                discarded_evidence=bundle.discarded_evidence,
+            )
+
         # Friction is a hard constraint. No historical score may bypass it.
         if bundle.retry_count >= 2:
             return RecoveryDecision(
