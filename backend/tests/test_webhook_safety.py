@@ -92,6 +92,26 @@ def test_enabled_webhook_verification_fails_closed_without_secret():
     assert result.mode == "razorpay_test"
 
 
+def test_invalid_signature_never_reaches_recovery_orchestrator(tmp_path):
+    db = Database(tmp_path / "invalid-signature.db")
+    orchestrator = OrchestratorSpy()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(razorpay_webhook(
+            request=RequestStub(payload("payment.captured")),
+            x_razorpay_signature="not-a-valid-signature",
+            x_razorpay_event_id="evt_invalid_capture",
+            db=db,
+            orchestrator=orchestrator,
+            settings=Settings(
+                razorpay_enabled=True,
+                razorpay_webhook_secret="configured-test-secret",
+            ),
+        ))
+    assert exc.value.status_code == 400
+    assert orchestrator.calls == 0
+    assert db.execute_one("SELECT COUNT(*) AS count FROM webhook_events")["count"] == 0
+
+
 def test_replay_window_rejects_old_or_implausibly_future_events():
     now = datetime.now(UTC)
     assert event_is_replay(

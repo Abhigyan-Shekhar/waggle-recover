@@ -104,21 +104,27 @@ def create_app() -> FastAPI:
     )
 
     # Register routers
+    from app.api.batches import router as batches_router
     from app.api.decisions import router as decisions_router
     from app.api.evaluation import router as evaluation_router
+    from app.api.executions import router as executions_router
     from app.api.mandate import router as mandate_router
     from app.api.memory_graph import router as memory_graph_router
     from app.api.payments import router as payments_router
+    from app.api.policies import router as policies_router
     from app.api.simulator import router as simulator_router
     from app.api.webhooks import router as webhooks_router
 
     app.include_router(payments_router, prefix="/api/payments", tags=["payments"])
+    app.include_router(policies_router, prefix="/api/policies", tags=["policies"])
     app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
     app.include_router(decisions_router, prefix="/api/decisions", tags=["decisions"])
+    app.include_router(batches_router, prefix="/api/batches", tags=["batches"])
     app.include_router(simulator_router, prefix="/api/simulator", tags=["simulator"])
     # Compatibility alias for early demo clients.
     app.include_router(simulator_router, prefix="/api/simulate", tags=["simulator"])
     app.include_router(evaluation_router, prefix="/api/evaluation", tags=["evaluation"])
+    app.include_router(executions_router, prefix="/api/executions", tags=["executions"])
     app.include_router(memory_graph_router, prefix="/api/memory", tags=["memory"])
     app.include_router(mandate_router, prefix="/api/mandate", tags=["mandate"])
 

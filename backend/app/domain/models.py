@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.domain.enums import (
     FailureClass,
@@ -114,6 +114,20 @@ class MerchantPolicy(BaseModel):
     requires_human_review: bool = False
     requires_human_review_below_confidence: bool = False
     min_automatic_confidence: float = 0.60
+
+    @model_validator(mode="after")
+    def validate_policy_bounds(self) -> MerchantPolicy:
+        if not 0 <= self.max_recovery_attempts <= 20:
+            raise ValueError("max_recovery_attempts must be between 0 and 20")
+        if self.min_retry_interval_seconds < 0 or self.max_retry_interval_seconds < self.min_retry_interval_seconds:
+            raise ValueError("retry interval bounds are invalid")
+        if self.max_retry_interval_seconds > 604800:
+            raise ValueError("max_retry_interval_seconds cannot exceed seven days")
+        if not 0 <= self.min_automatic_confidence <= 1:
+            raise ValueError("min_automatic_confidence must be between 0 and 1")
+        if len(set(self.allowed_actions)) != len(self.allowed_actions):
+            raise ValueError("allowed_actions cannot contain duplicates")
+        return self
 
     def allows_action(self, action: RecoveryAction) -> bool:
         return action in self.allowed_actions
@@ -269,6 +283,9 @@ class NormalizedPaymentEvent(BaseModel):
     subscription_id: str = ""
     mandate_id: str = ""
     invoice_id: str = ""
+    recovery_execution_id: str = ""
+    recovery_episode_id: str = ""
+    provider_payment_link_id: str = ""
 
 
 class RevenueRiskEvent(BaseModel):
@@ -332,6 +349,82 @@ class EscalationRecord(BaseModel):
     state: str = "PENDING"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     waggle_node_id: str | None = None
+    external_workflow_provider: str | None = None
+    external_workflow_id: str | None = None
+    external_workflow_status: str | None = None
+    external_workflow_created_at: datetime | None = None
+
+
+class RecoveryExecution(BaseModel):
+    """A bounded external recovery surface; creation never means recovery."""
+
+    id: str = Field(default_factory=_new_id)
+    provider: str
+    execution_type: str = "PAYMENT_LINK"
+    recovery_episode_id: str
+    failure_id: str
+    decision_id: str
+    attempt_id: str
+    merchant_id: str
+    customer_id: str
+    amount: int
+    currency: str = "INR"
+    status: str = "PENDING"
+    provider_execution_id: str | None = None
+    public_url: str | None = None
+    provider_payment_id: str | None = None
+    provider_status: str | None = None
+    failure_reason: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    confirmed_at: datetime | None = None
+    waggle_node_id: str | None = None
+
+    def safe_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "provider_label": "Razorpay Test Mode" if self.provider == "razorpay_test" else self.provider,
+            "execution_type": self.execution_type,
+            "provider_execution_id": self.provider_execution_id,
+            "public_url": self.public_url,
+            "recovery_episode_id": self.recovery_episode_id,
+            "decision_id": self.decision_id,
+            "status": self.status,
+            "provider_status": self.provider_status,
+            "provider_payment_id": self.provider_payment_id,
+            "amount": self.amount,
+            "currency": self.currency,
+            "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
+            "test_mode": self.provider == "razorpay_test",
+            "money_movement_confirmed": self.status == "SUCCESS",
+        }
+
+
+class RecoveryBatch(BaseModel):
+    id: str = Field(default_factory=lambda: f"batch_{uuid4().hex[:18]}")
+    merchant_id: str
+    case_count: int
+    status: str = "RUNNING"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+
+
+class BatchRecoveryCase(BaseModel):
+    id: str = Field(default_factory=_new_id)
+    batch_id: str
+    failure_id: str
+    recovery_episode_id: str
+    amount: int
+    action: RecoveryAction
+    outcome: OutcomeStatus
+    risk_score: int
+    risk_band: str
+    stale_evidence_rejected: int = 0
+    policy_blocked: bool = False
+    unsafe_action: bool = False
+    policy_violation: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class MandateContext(BaseModel):

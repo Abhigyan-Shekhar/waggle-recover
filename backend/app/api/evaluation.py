@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.api.auth import require_mutation_token
 from app.config import Settings, get_settings
@@ -203,3 +203,16 @@ async def evaluation_reports() -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             reports[key] = {"status": "invalid_cache", "message": "Cached report could not be read."}
     return {"reports": reports}
+
+
+@router.get("/authority-shadow/{scenario_id}")
+async def authority_shadow(scenario_id: str) -> dict[str, Any]:
+    """Compare one isolated case; never write a production RecoveryAttempt."""
+    from app.evaluation.shadow import run_authority_shadow
+    try:
+        result = await asyncio.to_thread(run_authority_shadow, scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    cache = REPORT_DIR / "ablations.json"
+    result["cached_ablation"] = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else None
+    return result

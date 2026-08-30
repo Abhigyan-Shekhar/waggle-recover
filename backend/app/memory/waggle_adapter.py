@@ -18,6 +18,7 @@ from app.domain.models import (
     PaymentInstrument,
     RecoveryAttempt,
     RecoveryDecision,
+    RecoveryExecution,
 )
 from app.memory import mapper
 
@@ -252,6 +253,41 @@ class WaggleRecoveryMemoryAdapter:
             )
         return result.node.id
 
+    def store_recovery_execution(
+        self,
+        execution: RecoveryExecution,
+        *,
+        decision_node_id: str,
+        failure_node_id: str,
+    ) -> str:
+        """Store a pending provider surface without representing it as recovery."""
+        data = execution.model_dump(mode="json")
+        result = self.graph.add_node(
+            label=f"{execution.provider} {execution.execution_type.lower()} {execution.id[:8]}",
+            content=(
+                f"Bounded {execution.execution_type} for episode {execution.recovery_episode_id}; "
+                f"status {execution.status}. Creation is not recovered revenue."
+            ),
+            node_type=mapper.outcome_node_type(),
+            tags=[
+                "recovery_execution", f"provider:{execution.provider}",
+                f"episode:{execution.recovery_episode_id}", f"status:{execution.status.lower()}",
+            ],
+            metadata={**data, "test_mode": execution.provider == "razorpay_test", "money_movement_confirmed": False},
+            valid_from=execution.created_at,
+        )
+        for target_id, relation in (
+            (decision_node_id, "execution_of_decision"),
+            (failure_node_id, "execution_of_failure"),
+        ):
+            self.graph.add_edge(
+                source_id=result.node.id,
+                target_id=target_id,
+                relationship=RelationType.DERIVED_FROM,
+                metadata={"relation": relation, "status": execution.status},
+            )
+        return result.node.id
+
     def store_merchant_policy(self, policy: MerchantPolicy) -> str:
         """Store merchant policy in Waggle. Returns Waggle node ID."""
         policy_dict = policy.model_dump(mode="json")
@@ -371,6 +407,23 @@ class WaggleRecoveryMemoryAdapter:
         except Exception as e:
             LOGGER.debug("Could not find merchant policy for %s: %s", merchant_id, e)
         return None
+
+    def get_merchant_policy_history(self, merchant_id: str) -> list[dict[str, Any]]:
+        """Return every policy version, including invalidated audit history."""
+        snapshot = self.graph.get_graph_snapshot()
+        policies = [
+            dict(node) for node in snapshot.get("nodes", [])
+            if "merchant_policy" in (node.get("tags") or [])
+            and f"merchant:{merchant_id}" in (node.get("tags") or [])
+        ]
+        return sorted(
+            policies,
+            key=lambda item: (
+                int(item.get("metadata", {}).get("version", 1)),
+                str(item.get("metadata", {}).get("effective_from", "")),
+            ),
+            reverse=True,
+        )
 
     def get_recovery_outcomes_for_pattern(
         self,

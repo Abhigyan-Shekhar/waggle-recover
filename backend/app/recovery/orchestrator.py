@@ -29,6 +29,7 @@ from app.domain.models import (
     PaymentInstrument,
     RecoveryAttempt,
     RecoveryDecision,
+    RecoveryExecution,
 )
 from app.memory.retrieval import EvidenceRetriever
 from app.memory.supersession import SupersessionValidator
@@ -36,8 +37,10 @@ from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
 from app.recovery.decision_engine import DecisionProvider, DeterministicDecisionProvider
 from app.recovery.episodes import recovery_episode_for
+from app.recovery.execution_provider import RecoveryExecutionProvider, build_execution_provider
 from app.recovery.executor import RecoveryExecutor
 from app.recovery.explanation import build_explanation, build_structured_audit
+from app.recovery.handoff import N8nEscalationHandoff
 from app.recovery.policy import PolicyEngine
 from app.recovery.risk import assess_revenue_risk
 from app.recovery.strategy_priors import get_strategy_priors
@@ -75,6 +78,8 @@ class RecoveryOrchestrator:
         decision_provider: DecisionProvider | None = None,
         settings: Settings | None = None,
         temporal_validation_enabled: bool = True,
+        execution_provider: RecoveryExecutionProvider | None = None,
+        escalation_handoff: N8nEscalationHandoff | None = None,
     ) -> None:
         self.adapter = adapter
         self.db = db
@@ -91,6 +96,8 @@ class RecoveryOrchestrator:
         self.policy_engine = PolicyEngine()
         self.executor = RecoveryExecutor()
         self.decision_provider = decision_provider or DeterministicDecisionProvider()
+        self.execution_provider = execution_provider if execution_provider is not None else build_execution_provider(self.settings)
+        self.escalation_handoff = escalation_handoff or N8nEscalationHandoff(self.settings)
 
     def process_event(
         self,
@@ -146,6 +153,10 @@ class RecoveryOrchestrator:
                     "money_movement": "NONE",
                     "recommended_next_step": escalation_row["recommended_manual_next_step"],
                     "state": escalation_row["state"],
+                    "external_workflow_provider": escalation_row["external_workflow_provider"],
+                    "external_workflow_id": escalation_row["external_workflow_id"],
+                    "external_workflow_status": escalation_row["external_workflow_status"],
+                    "external_workflow_created_at": escalation_row["external_workflow_created_at"],
                 }
             # STOP and ESCALATE are absorbing states. Replayed webhooks or new
             # failures in the same episode cannot restart automated recovery.
@@ -307,6 +318,13 @@ class RecoveryOrchestrator:
             escalation_dict["accepted_evidence_json"] = json.dumps(escalation_record.accepted_evidence_ids)
             escalation_dict["rejected_evidence_json"] = json.dumps(escalation_record.rejected_evidence_ids)
             self.db.upsert_escalation(escalation_dict)
+            handoff = self.escalation_handoff.send(escalation_record, failure, final_decision)
+            if handoff["status"] != "DISABLED":
+                self.db.update_escalation_workflow(escalation_record.id, handoff)
+                escalation_record.external_workflow_provider = handoff.get("provider")
+                escalation_record.external_workflow_id = handoff.get("workflow_id")
+                escalation_record.external_workflow_status = handoff.get("status")
+                escalation_record.external_workflow_created_at = handoff.get("created_at")
 
         dec_dict = final_decision.model_dump(mode="json")
         dec_dict["evidence_json"] = json.dumps([r.model_dump(mode="json") for r in bundle.accepted_evidence])
@@ -349,6 +367,16 @@ class RecoveryOrchestrator:
         attempt_dict["waggle_outcome_node_id"] = outcome_node_id
         self.db.upsert_attempt(attempt_dict)
 
+        execution = None
+        if not simulate:
+            execution = self._create_external_execution(
+                failure=failure,
+                decision=final_decision,
+                attempt=attempt,
+                failure_node_id=waggle_node_id,
+                decision_node_id=dec_node_id,
+            )
+
         # 13. Update instrument success timestamp if recovery succeeded
         if attempt.outcome == OutcomeStatus.SUCCESS and failure.instrument_id:
             self._update_instrument_success(failure.customer_id, failure.instrument_id)
@@ -377,6 +405,7 @@ class RecoveryOrchestrator:
             "risk_assessment": risk_assessment.to_dict(),
             "recovery_episode": episode.model_dump(mode="json"),
             "escalation": self._escalation_payload(escalation_record) if escalation_record else None,
+            "execution": execution,
             "metrics": {
                 "total_latency_ms": round(total_latency_ms, 2),
                 "decision_latency_ms": round(decision_latency_ms, 2),
@@ -423,48 +452,156 @@ class RecoveryOrchestrator:
         }
 
     def _handle_captured(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
-        """Handle payment.captured — close any open recovery attempts."""
+        """Confirm only the one execution correlated to a signed provider capture."""
         LOGGER.info("Payment captured: %s", event.payment_id)
-        # A capture is new durable evidence, not merely a SQLite status flip.
-        # Store a confirmed SUCCESS outcome with links back to the original
-        # decision and failure, then atomically close that attempt in app data.
-        candidates = self.db.get_capture_candidates(event.payment_id)
-        updated = 0
-        outcome_nodes: list[str] = []
-        for row in candidates:
-            attempt = RecoveryAttempt(
-                id=row["id"],
-                failure_id=row["failure_id"],
-                customer_id=row["customer_id"],
-                merchant_id=row["merchant_id"],
-                action_type=RecoveryAction(row["action_type"]),
-                recommended_method=row.get("recommended_method"),
-                recommended_route=row.get("recommended_route"),
-                retry_after_seconds=row.get("retry_after_seconds"),
-                decision_id=row.get("decision_id", ""),
-                executed_at=event.created_at,
-                outcome=OutcomeStatus.SUCCESS,
-                recovered_amount=event.amount,
-                method=row.get("failure_method", ""),
-                instrument_id=row.get("failure_instrument_id", ""),
-                failure_code=row.get("failure_code", ""),
-                recovery_episode_id=row.get("recovery_episode_id", ""),
+        provider_link_id = event.provider_payment_link_id
+        if not provider_link_id and self.execution_provider is not None:
+            try:
+                provider_link_id = self.execution_provider.resolve_payment_link_id(event.payment_id) or ""
+            except Exception:
+                provider_link_id = ""
+        execution = self.db.get_execution_for_confirmation(
+            execution_id=event.recovery_execution_id,
+            provider_execution_id=provider_link_id,
+        )
+        if execution is None:
+            if self.execution_provider is not None and self.execution_provider.configured():
+                return {
+                    "status": "captured_unmatched",
+                    "payment_id": event.payment_id,
+                    "updated_attempts": 0,
+                    "recovered_amount": 0,
+                    "reason": "Provider capture was not correlated to a recovery execution",
+                }
+            return self._handle_legacy_capture(event)
+        if execution["status"] != "PENDING":
+            return {
+                "status": "captured_unmatched",
+                "payment_id": event.payment_id,
+                "updated_attempts": 0,
+                "recovered_amount": 0,
+                "reason": "No pending recovery execution matched this capture",
+            }
+        if event.amount != execution["amount"] or event.currency != execution["currency"]:
+            return {
+                "status": "captured_unmatched",
+                "payment_id": event.payment_id,
+                "updated_attempts": 0,
+                "recovered_amount": 0,
+                "reason": "Capture amount or currency did not match the recovery execution",
+            }
+        context = self.db.get_execution_confirmation_context(execution["id"])
+        confirmed_at = event.created_at.isoformat()
+        if context is None or not self.db.confirm_execution(execution["id"], event.payment_id, event.amount, confirmed_at):
+            return {"status": "duplicate_capture", "payment_id": event.payment_id, "updated_attempts": 0, "recovered_amount": 0}
+        attempt = RecoveryAttempt(
+            id=context["attempt_id"], failure_id=context["failure_id"], customer_id=context["customer_id"],
+            merchant_id=context["merchant_id"], action_type=RecoveryAction(context["action_type"]),
+            recommended_method=context.get("recommended_method"), recommended_route=context.get("recommended_route"),
+            retry_after_seconds=context.get("retry_after_seconds"), decision_id=context["decision_id"],
+            executed_at=event.created_at, outcome=OutcomeStatus.SUCCESS, recovered_amount=event.amount,
+            method=context.get("failure_method", ""), instrument_id=context.get("failure_instrument_id", ""),
+            failure_code=context.get("failure_code", ""), recovery_episode_id=context["recovery_episode_id"],
+        )
+        outcome_node_id = self.adapter.store_recovery_outcome(
+            attempt=attempt,
+            decision_node_id=context.get("decision_waggle_node_id"),
+            failure_node_id=context.get("failure_waggle_node_id"),
+        )
+        if context.get("waggle_node_id"):
+            self.adapter.link_nodes(
+                outcome_node_id, context["waggle_node_id"], "derived_from",
+                {"relation": "provider_confirmed_execution", "provider_payment_id": event.payment_id},
             )
-            outcome_node_id = self.adapter.store_recovery_outcome(
-                attempt=attempt,
-                decision_node_id=row.get("decision_waggle_node_id"),
-                failure_node_id=row.get("failure_waggle_node_id"),
-            )
-            if self.db.mark_attempt_captured(attempt.id, event.amount, outcome_node_id):
-                updated += 1
-                outcome_nodes.append(outcome_node_id)
+        self.db.mark_attempt_captured(attempt.id, event.amount, outcome_node_id)
         return {
             "status": "captured",
             "payment_id": event.payment_id,
-            "updated_attempts": updated,
+            "recovery_episode_id": context["recovery_episode_id"],
+            "execution_id": execution["id"],
+            "updated_attempts": 1,
             "recovered_amount": event.amount,
+            "outcome_waggle_nodes": [outcome_node_id],
+            "confirmation": "CONFIRMED BY RAZORPAY WEBHOOK",
+        }
+
+    def _handle_legacy_capture(self, event: NormalizedPaymentEvent) -> dict[str, Any]:
+        """Compatibility path for a recommendation correlated by identical payment id."""
+        candidates = self.db.get_capture_candidates(event.payment_id)
+        outcome_nodes: list[str] = []
+        for row in candidates:
+            attempt = RecoveryAttempt(
+                id=row["id"], failure_id=row["failure_id"], customer_id=row["customer_id"],
+                merchant_id=row["merchant_id"], action_type=RecoveryAction(row["action_type"]),
+                recommended_method=row.get("recommended_method"), recommended_route=row.get("recommended_route"),
+                retry_after_seconds=row.get("retry_after_seconds"), decision_id=row.get("decision_id", ""),
+                executed_at=event.created_at, outcome=OutcomeStatus.SUCCESS, recovered_amount=event.amount,
+                method=row.get("failure_method", ""), instrument_id=row.get("failure_instrument_id", ""),
+                failure_code=row.get("failure_code", ""), recovery_episode_id=row.get("recovery_episode_id", ""),
+            )
+            node_id = self.adapter.store_recovery_outcome(
+                attempt=attempt, decision_node_id=row.get("decision_waggle_node_id"),
+                failure_node_id=row.get("failure_waggle_node_id"),
+            )
+            if self.db.mark_attempt_captured(attempt.id, event.amount, node_id):
+                outcome_nodes.append(node_id)
+        return {
+            "status": "captured", "payment_id": event.payment_id,
+            "updated_attempts": len(outcome_nodes),
+            "recovered_amount": event.amount if outcome_nodes else 0,
             "outcome_waggle_nodes": outcome_nodes,
         }
+
+    def _create_external_execution(
+        self,
+        *,
+        failure: PaymentFailure,
+        decision: RecoveryDecision,
+        attempt: RecoveryAttempt,
+        failure_node_id: str,
+        decision_node_id: str,
+    ) -> dict[str, Any] | None:
+        eligible = decision.action in {RecoveryAction.SUGGEST_METHOD, RecoveryAction.CUSTOMER_NUDGE}
+        if not eligible or decision.policy_result == PolicyResult.BLOCK or self.execution_provider is None:
+            return None
+        existing = self.db.get_execution_for_episode(decision.recovery_episode_id)
+        if existing is not None:
+            return self._safe_execution_row(existing)
+        stub = RecoveryExecution(
+            provider=self.execution_provider.name,
+            recovery_episode_id=decision.recovery_episode_id,
+            failure_id=failure.id,
+            decision_id=decision.id,
+            attempt_id=attempt.id,
+            merchant_id=failure.merchant_id,
+            customer_id=failure.customer_id,
+            amount=failure.amount,
+            currency=failure.currency,
+            status="CREATING",
+        )
+        inserted = self.db.upsert_execution(stub.model_dump(mode="json"))
+        if inserted["id"] != stub.id:
+            return self._safe_execution_row(inserted)
+        try:
+            created = self.execution_provider.create(stub)
+            created.waggle_node_id = self.adapter.store_recovery_execution(
+                created, decision_node_id=decision_node_id, failure_node_id=failure_node_id
+            )
+            self.db.update_execution(created.model_dump(mode="json"))
+            return created.safe_dict()
+        except Exception as exc:
+            failed = stub.model_copy(update={
+                "status": "FAILED", "provider_status": "error",
+                "failure_reason": f"Provider request failed ({type(exc).__name__})",
+                "updated_at": datetime.now(UTC),
+            })
+            self.db.update_execution(failed.model_dump(mode="json"))
+            return failed.safe_dict()
+
+    @staticmethod
+    def _safe_execution_row(row: dict[str, Any]) -> dict[str, Any]:
+        execution = RecoveryExecution.model_validate(row)
+        return execution.safe_dict()
 
     def _build_failure(self, event: NormalizedPaymentEvent, recovery_episode_id: str) -> PaymentFailure:
         return PaymentFailure(
@@ -585,6 +722,12 @@ class RecoveryOrchestrator:
             "money_movement": "NONE",
             "recommended_next_step": record.recommended_manual_next_step,
             "state": record.state,
+            "external_workflow_provider": record.external_workflow_provider,
+            "external_workflow_id": record.external_workflow_id,
+            "external_workflow_status": record.external_workflow_status,
+            "external_workflow_created_at": (
+                record.external_workflow_created_at.isoformat() if record.external_workflow_created_at else None
+            ),
         }
 
     @staticmethod

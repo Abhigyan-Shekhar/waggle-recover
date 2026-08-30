@@ -38,6 +38,8 @@ def normalize_razorpay_event(payload: dict[str, Any]) -> NormalizedPaymentEvent 
 
     # Customer ID: Razorpay uses contact + email as identifier, or notes
     notes = entity.get("notes", {}) or {}
+    payment_link_entity = payload.get("payload", {}).get("payment_link", {}).get("entity", {}) or {}
+    payment_link_notes = payment_link_entity.get("notes", {}) or {}
     customer_id = (
         notes.get("customer_id")
         or notes.get("user_id")
@@ -72,6 +74,15 @@ def normalize_razorpay_event(payload: dict[str, Any]) -> NormalizedPaymentEvent 
         subscription_id=str(notes.get("subscription_id", "")),
         mandate_id=str(notes.get("mandate_id", "")),
         invoice_id=str(notes.get("invoice_id", "")),
+        recovery_execution_id=str(
+            notes.get("recovery_execution_id") or payment_link_notes.get("recovery_execution_id") or ""
+        ),
+        recovery_episode_id=str(
+            notes.get("recovery_episode_id") or payment_link_notes.get("recovery_episode_id") or ""
+        ),
+        provider_payment_link_id=str(
+            notes.get("payment_link_id") or payment_link_entity.get("id") or ""
+        ),
     )
 
 

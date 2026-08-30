@@ -35,7 +35,12 @@ def signed_post(url: str, secret: str, event_id: str, payload: dict) -> dict:
         raise SystemExit(f"Webhook rejected ({exc.code}): {detail}") from exc
 
 
-def payment_payload(event: str, payment_id: str, event_id: str) -> dict:
+def payment_payload(
+    event: str,
+    payment_id: str,
+    event_id: str,
+    recovery_execution_id: str | None = None,
+) -> dict:
     failed = event == "payment.failed"
     entity = {
         "id": payment_id,
@@ -46,7 +51,10 @@ def payment_payload(event: str, payment_id: str, event_id: str) -> dict:
         "method": "card",
         "card": {"last4": "9988"},
         "merchant_id": "MERCH-RAZORPAY-DEMO",
-        "notes": {"customer_id": "CUST-RAZORPAY-DEMO"},
+        "notes": {
+            "customer_id": "CUST-RAZORPAY-DEMO",
+            **({"recovery_execution_id": recovery_execution_id} if recovery_execution_id else {}),
+        },
         "created_at": int(time.time()),
     }
     if failed:
@@ -81,10 +89,17 @@ def main() -> None:
     outcome = failed.get("outcome", {})
     outcome_status = outcome.get("outcome", "PENDING") if isinstance(outcome, dict) else outcome
     print(f"    verified={failed.get('mode') == 'razorpay_test'} action={decision.get('action', '—')} outcome={outcome_status}")
+    execution_id = (failed.get("execution") or {}).get("id")
 
     time.sleep(max(0, args.hold_seconds))
     print("2/2 Sending signed payment.captured webhook…")
-    captured = signed_post(args.url, secret, captured_id, payment_payload("payment.captured", payment_id, captured_id))
+    captured_payment_id = f"pay_captured_{suffix}" if execution_id else payment_id
+    captured = signed_post(
+        args.url,
+        secret,
+        captured_id,
+        payment_payload("payment.captured", captured_payment_id, captured_id, execution_id),
+    )
     print(f"    status={captured.get('status')} updated_attempts={captured.get('updated_attempts', 0)} recovered=INR 8,000")
     print(f"Demo complete: {payment_id} now has a signed webhook audit trail and captured recovery outcome.")
 

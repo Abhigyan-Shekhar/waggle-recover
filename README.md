@@ -1,69 +1,125 @@
 # Waggle Recover
 
-Waggle Recover is a hackathon prototype for Razorpay's Revenue Recovery track: a bounded revenue-recovery agent that remembers prior outcomes, detects when that evidence has been superseded, and records exactly why every recovery action was selected or rejected. It supports payment failures and a second curated subscription/mandate failure path through the same pipeline.
+> Remembering what worked is not enough. A recovery agent must know whether that memory is still authoritative.
 
-It never processes money. Razorpay Test Mode webhooks are supported, but the product is fully demoable with its deterministic simulator and needs no external credentials.
+Waggle Recover is a deployment-believable Razorpay Revenue Recovery submission. It turns a payment failure into a bounded recommendation, optionally opens a Razorpay **Test Mode** Payment Link, waits for provider confirmation, and preserves the complete evidence and policy trail in Waggle and SQLite. It never performs an automatic card charge and never treats a prediction, a failed-payment event, or a Payment Link creation as recovered revenue.
 
-The product thesis is simple: **remembering what worked is not enough—a recovery agent must know whether that memory is still authoritative.**
+All benchmark money in this repository is **SIMULATED GMV**. No production uplift or production reliability is claimed.
 
-## Architecture and decision modes
+## WHAT WAGGLE RECOVER IS
 
-Waggle Recover has two complementary primary modes:
+Waggle Recover is an auditable recovery control plane for payment and subscription revenue risk. Razorpay supplies signed payment events and confirms outcomes; Waggle establishes which historical facts are current; a deterministic provider or Qwen proposes a bounded action; the deterministic `PolicyEngine` remains final authority; and an optional n8n workflow hands terminal escalations to a human.
 
-- **Deterministic mode** is the default. It powers reproducible benchmarking and safe rule-based decisions without API keys, network access, Groq, or model calls.
-- **AI Agent mode** runs a small LangGraph state machine. Waggle retrieves and temporally validates history first; a Groq-hosted Qwen model then proposes a candidate using trusted evidence only. The existing deterministic `PolicyEngine` remains the final authority.
+The closed action set is `RETRY_NOW`, `RETRY_AFTER`, `SUGGEST_METHOD`, `CUSTOMER_NUDGE`, `WAIT_NEXT_CYCLE`, `ESCALATE`, and `STOP`. `STOP` and `ESCALATE` are absorbing episode states and always mean no money movement.
 
-The earlier simple `llm` provider remains available for compatibility, but it is not used by the benchmark.
+The dashboard includes curated payment/subscription scenarios, a live temporal-authority shadow, Razorpay Test Mode execution state, a 20–50 case batch queue, an immutable merchant-policy editor, optional signed n8n handoff, decision graphs, and frozen evaluation reports.
+
+## WHY CONTEXTUAL HISTORY IS NOT ENOUGH
+
+Semantic relevance can retrieve a successful retry for a card that has since been replaced, a route the merchant has blocked, or a policy version that is no longer in force. A context-only system can confidently reuse exactly the wrong fact.
+
+Waggle Recover separates retrieval from authority. It retrieves broadly for audit, then permits only evidence proven `CURRENT` into trusted decision context. `UNKNOWN`, stale, superseded, expired, and conflicting evidence fails closed. Rejected evidence remains visible to operators, but Qwen receives only its count and rejection categories—never rejected IDs, labels, methods, instruments, timing, outcomes, or reasons.
+
+## ARCHITECTURE
 
 ```text
-Payment or subscription revenue-risk event
-      ↓
-Normalization
-      ↓
-Waggle semantic retrieval
-      ↓
-Temporal / supersession validation
-      ↓
-Trusted evidence + rejected-memory count/categories
-      ↓
-Recency-weighted Bayesian strategy priors
-      ↓
-LangGraph + Groq/Qwen (AI Agent mode only)
-      ↓
-Candidate recovery action
-      ↓
-Deterministic Merchant PolicyEngine
-      ↓
-Final bounded action / explicit human escalation
-      ↓
-Simulated execution / captured outcome
-      ↓
-Waggle memory
+Razorpay payment event / normalized revenue-risk event
+  → normalization
+  → stable RecoveryEpisode identity
+  → Waggle semantic retrieval
+  → temporal and supersession authority validation
+  → trusted evidence only
+  → deterministic or Qwen/LangGraph candidate
+  → deterministic Merchant PolicyEngine
+  → bounded action / terminal STOP / terminal ESCALATE
+  → simulator or Razorpay Test Mode execution provider
+  → provider-confirmed payment.captured outcome
+  → Waggle + SQLite audit graph
+
+ESCALATE → EscalationRecord → optional signed n8n webhook
+         → human review only; no money movement
 ```
 
-The LLM never directly executes payments and cannot override Waggle's stale/superseded status. Malformed output, timeouts, unknown evidence citations, invented methods, and model failures use the deterministic provider as a visible safe fallback.
+The execution-provider boundary has simulation and Razorpay Test Mode implementations. The batch runner invokes the normal `RecoveryOrchestrator` once per independent case. Merchant policy is not duplicated in application tables; Waggle's versioned policy graph is the authority.
 
-Domain semantics live in tags and metadata on Waggle's existing nodes and edges. In particular, a replacement instrument creates `new --updates--> old`; historical evidence tied exclusively to the old instrument is retained for audit but vetoed from decision-making.
+## TEMPORAL AUTHORITY
 
-## Run it
+Instrument replacement creates `new --updates--> old`. The old node and its outcomes remain queryable, while `valid_to` and update-chain traversal prevent them from influencing a current decision. Policy versions use the same temporal rule. Evidence without enough identity or time information is `UNKNOWN` and rejected rather than optimistically trusted.
 
-The backend pins a tested Waggle Git revision, so it installs from a clean standalone checkout without requiring an adjacent repository.
+`GET /api/evaluation/authority-shadow/curated_003` runs one scenario in two isolated temporary stores. Both sides have the same scenario, graph, retrieval, ranking, provider, policy, retry budget, and simulated outcomes; only temporal validation changes. Neither shadow result is persisted as a real recovery attempt. The UI obtains checked-in ablation values from the report API rather than hard-coded marketing copy.
+
+## RECOVERY EPISODES
+
+Retry budgets and terminal states belong to a stable `RecoveryEpisode`, preferring subscription, mandate, invoice, order, then payment identity. Independent payments do not consume one another's attempt budget. Duplicate delivery of the same failed event reuses the same episode and execution. A capture can confirm only the execution explicitly linked through recovery notes, Payment Link identity, or provider lookup for that payment.
+
+`STOP` and `ESCALATE` are irreversible for an episode. A webhook replay, policy update, model result, or failed external handoff cannot restart automation.
+
+## QWEN + POLICY BOUNDARY
+
+Deterministic mode is the default and powers deterministic evaluations without network or model calls. Agent mode runs a small LangGraph workflow using a runtime-configured Groq-hosted Qwen model. Qwen proposes from sanitized, accepted evidence; it does not execute payments and cannot override temporal status.
+
+Malformed output, timeout, invented method, unknown citation, or provider failure produces a visible deterministic fallback. The `PolicyEngine` always validates the candidate last. This boundary matters because the frozen Qwen evaluation reached 52% candidate accuracy and 60% post-policy accuracy—not 100%—even though all 50 responses were structurally valid.
+
+## RAZORPAY TEST MODE EXECUTION
+
+The optional provider uses Razorpay's official Standard Payment Link API, `POST /v1/payment_links`. It sends amount, currency, `accept_partial=false`, an expiry, unique reference, description, non-sensitive recovery identifiers in notes, and notification settings. No PAN, CVV, raw payment credentials, customer phone/email, API key, or webhook secret is stored in the execution or returned by the API.
+
+Enable it only with Test Mode credentials:
+
+```bash
+RAZORPAY_ENABLED=true
+RAZORPAY_TEST_EXECUTION_ENABLED=true
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
+```
+
+Live-key IDs are rejected. Eligible, policy-approved `SUGGEST_METHOD` and `CUSTOMER_NUDGE` decisions may create one idempotent Payment Link per episode/execution type. Creation persists `PENDING`, returns a safe public URL, and records zero recovered money. Missing configuration leaves the simulator functional.
+
+A verified `payment.captured` webhook is authoritative. The handler verifies HMAC, enforces a replay window, deduplicates provider events, resolves the exact execution/episode, checks amount and currency, and only then records `SUCCESS` and recovered amount. An invalid signature, unrelated payment, mismatch, provider error, or merely created link leaves recovery unconfirmed.
+
+See [the Test Mode walkthrough](docs/RAZORPAY_TEST_WEBHOOK_DEMO.md) and Razorpay's official [Payment Link create API](https://razorpay.com/docs/api/payments/payment-links/create-standard/), [fetch API](https://razorpay.com/docs/api/payments/payment-links/fetch-all-standard/), and [payment webhook documentation](https://razorpay.com/docs/webhooks/payments/).
+
+## BATCH RECOVERY
+
+`POST /api/batches/demo?count=25` creates one merchant batch of 20–50 isolated normalized failures. Every case uses the normal retrieval, authority validation, provider, policy, executor, and audit persistence. Dashboard rows open the existing decision graph. Operators can sort by risk/value and filter by action, human review, or stale-evidence rejection.
+
+The aggregate deliberately separates:
+
+- **SIMULATED RECOVERY** — deterministic scenario outcome, never production revenue;
+- **TEST MODE PENDING** — a created link, never counted as recovered;
+- **PROVIDER-CONFIRMED RECOVERY** — only a linked capture webhook;
+- safely stopped and human-review GMV — no money movement.
+
+It also reports action counts, policy blocks, stale memories rejected, unsafe actions, and policy violations.
+
+## HUMAN ESCALATION / N8N
+
+`ESCALATE` first creates the internal SQLite and Waggle `EscalationRecord`. If n8n is configured, Waggle Recover then sends a minimal HMAC-SHA256-signed payload containing identifiers, amount/currency, failure/action/risk summaries, evidence IDs/count, reason, and the manual next step. It sends no instrument credentials or provider secrets.
+
+```bash
+N8N_ENABLED=true
+N8N_ESCALATION_WEBHOOK_URL=https://your-n8n.example/webhook/waggle-recover-human-review
+N8N_WEBHOOK_SECRET=...
+```
+
+The returned workflow ID/status is stored on the escalation. Disabled n8n preserves the internal queue. Failure leaves the decision escalated and cannot resume automation. STOP and normal decisions emit no handoff; episode replay creates no duplicate. Import [the sample internal-review workflow](n8n/waggle-recover-human-review.json), configure its `N8N_WEBHOOK_SECRET`, and enable Code-node access to Node's `crypto` module. It verifies the signature and terminal boundary before returning a demo workflow ID, without another paid destination.
+
+## MERCHANT POLICY VERSIONING
+
+The policy console edits the existing `MerchantPolicy`: attempt limit, retry bounds, allowed actions, blocked methods/routes, confidence threshold, and human-review requirements. Saving creates an immutable Waggle node, adds `NEW_POLICY --updates--> OLD_POLICY`, invalidates the old node for future decisions, and retains the timeline for audit. The newest current version is chosen deterministically.
+
+Current policy is loaded before decision validation. Historical successes remain visible even when current policy blocks their method, but cannot bypass current rules. Invalid retry bounds/confidence, duplicate actions, and out-of-range attempts are rejected. Policy mutation can be protected with `PROTECT_MUTATION_ENDPOINTS=true` and `MUTATION_API_TOKEN`.
+
+## RUN LOCALLY
+
+The backend pins its Waggle dependency and runs without external credentials:
 
 ```bash
 cd backend
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e ".[dev,agent]"
-uvicorn app.main:app --reload
+uv sync --all-extras --frozen
+WAGGLE_EMBEDDING_MODEL=fake uv run uvicorn app.main:app --reload
 ```
-
-Run the backend tests from the same activated environment:
-
-```bash
-python -m pytest -q
-```
-
-The dashboard is a small React/Vite client:
 
 ```bash
 cd frontend
@@ -71,147 +127,54 @@ npm ci
 npm run dev
 ```
 
-Set `VITE_API_URL` only if the API is not at `http://localhost:8000`. Copy `backend/.env.example` to `backend/.env` to configure persistent database paths or Razorpay Test Mode. Do not commit the resulting `.env` file.
+Open `http://localhost:5173`. Or use `docker compose up --build`; data persists in `waggle-data`. Runtime secrets belong in an uncommitted `.env`, never in images/source. Agent mode additionally needs `DECISION_PROVIDER=agent`, `GROQ_API_KEY`, and a currently supported runtime `GROQ_MODEL`.
 
-### Run with Docker
+## EVALUATIONS
 
-Docker Compose starts the API, persistent Waggle/SQLite storage, and the production-built dashboard without requiring local Python or Node.js installs:
+All deterministic money below is **SIMULATED GMV**. Scenario labels, weights, potential outcomes, retry budgets, and frozen Qwen rows are not adjusted to improve metrics.
 
-```bash
-docker compose up --build
-```
+| Evaluation | Current checked result |
+| --- | --- |
+| Deterministic 200-case, seed 42 | Waggle: **100%** parameter-aware action accuracy, **87%** success, **86.92% SIMULATED GMV**, **100%** stale rejection. Contextual History: 76%, 76%, 76.92%, 0%. Blind Fixed Retry: 43%, 43%, 48.04%, 0%. |
+| Five-seed 1,000-case robustness | **100%** parameter-aware accuracy, **87%** success, **87.38% SIMULATED GMV**, **100%** stale rejection, **0** unsafe actions, **0** unnecessary escalations, **0** policy violations. |
+| Controlled 200-case authority ablation | Validation OFF: **89%** accuracy, **76.92% SIMULATED GMV**, **4.55%** known-stale usage. Validation ON: **100%** accuracy, **86.92% SIMULATED GMV**, **0%** stale use, **100%** stale rejection. |
+| Frozen Qwen, seed 31415, 50 live calls | **100%** structurally valid output, **52%** candidate accuracy, **60%** post-policy accuracy, 0 fallback, 0 hallucinated citations, 0 stale citations, 0 rejected-memory use; mean latency 5,964.36 ms. |
 
-Open `http://localhost:5173`; the API and health endpoint are available at `http://localhost:8000` and `http://localhost:8000/health`. The default container configuration uses deterministic decisions and Waggle's fake embedding model so the demo starts without credentials or model downloads. To use Qwen, provide runtime environment values—never bake them into an image:
-
-```bash
-GROQ_API_KEY='your runtime key' DECISION_PROVIDER=agent docker compose up --build
-```
-
-Stop the stack with `docker compose down`. Add `-v` only when you intentionally want to remove the named demo-data volume.
-
-### AI Agent configuration
-
-Set these only for a live Groq/Qwen demo:
-
-```bash
-export DECISION_PROVIDER=agent
-export GROQ_API_KEY='your Groq key'
-export GROQ_MODEL='qwen/qwen3.8-27b'
-export AGENT_TEMPERATURE=0
-export AGENT_TIMEOUT_SECONDS=15
-```
-
-`GROQ_MODEL` is always runtime-configurable; confirm the example against [Groq's current supported-model list](https://console.groq.com/docs/models). If credentials, the model, or LangGraph execution are unavailable, simulator AI mode reports the fallback rather than pretending an AI call succeeded.
-
-## Demo and evaluation
-
-Run a curated scenario:
-
-```bash
-curl -X POST 'http://localhost:8000/api/simulator/scenario/stale_card_trap/run?decision_mode=deterministic'
-curl -X POST 'http://localhost:8000/api/simulator/scenario/stale_card_trap/run?decision_mode=agent'
-curl -X POST 'http://localhost:8000/api/simulator/scenario/timing_memory/run?decision_mode=agent'
-```
-
-Other API entry points include `GET /api/simulator/scenarios/curated`, `POST /api/simulator/reset`, `GET /api/payments/`, `GET /api/payments/overview`, `POST /api/evaluation/run`, `GET /api/evaluation/reports`, `POST /api/mandate/recommend`, and `POST /api/mandate/scenarios/{scenario_id}/run`.
-
-Curated product proofs now include Stale Card Trap, exact Timing Memory, Human Escalation, Policy Changed, and four subscription/mandate cases: valid timing memory, replaced instrument, exhausted-attempt escalation, and no authoritative memory.
-
-The **Deterministic Policy Evaluation** compares three transparent systems on five curated/adversarial scenarios plus deterministic synthetic histories:
-
-1. Blind fixed retry.
-2. Contextual-history baseline (no update-chain traversal).
-3. Waggle Recover (graph memory, supersession validation, policy, and audit trail).
-
-Evaluation metrics are computed from simulator outcomes and persisted in SQLite; the dashboard never invents KPI values. The 200-case evaluation always constructs its own deterministic orchestrator, so `DECISION_PROVIDER=agent` never silently turns those benchmark numbers into Qwen results.
-
-### Online strategy adaptation
-
-Waggle also learns which **safe recovery strategy** works for each merchant and failure context. It computes recency-weighted Beta-Binomial estimates from authoritative `SUCCESS`/`FAILURE` recovery outcomes, using a fixed 14-day half-life, prior strength κ=5.0, and minimum effective sample size 5.0. Superseded or expired instrument outcomes contribute exactly zero. The estimates rank already-viable actions only; retry limits, permanent-failure rules, merchant constraints, and the deterministic `PolicyEngine` remain final authority.
-
-The dashboard exposes these estimates as **Adaptive Strategy Memory**, including posterior success probability, effective sample size, and evidence count. The same compact audit is available to Qwen as trusted context in AI Agent mode.
-
-A separate sealed sequential evaluator compares the original static deterministic policy with this adaptive ranking:
+Deterministic and Qwen reports are intentionally separate. Cached Qwen rows contain no prompts, context, secrets, or hidden reasoning. The Qwen cache is not rerun in normal CI.
 
 ```bash
 cd backend
-python -m app.evaluation.sequential
+.venv/bin/ruff check app tests
+WAGGLE_EMBEDDING_MODEL=fake .venv/bin/pytest -q
+
+cd ../frontend
+npm ci
+npm run build
 ```
 
-Its protocol is fixed in source before results are observed: seeds `11, 29, 47, 71, 101`; three independent merchant streams; 30 cases per merchant; cold/intermediate/warm phases of 10 cases; identical pre-generated potential outcomes for both conditions; and merchant memory reset between streams. In every 10-case block, six controlled-exploration cases expose exactly one non-STOP action (`RETRY_AFTER`, `SUGGEST_METHOD`, `CUSTOMER_NUDGE`, repeated twice) and four decision-opportunity cases expose all three. The report therefore includes both overall optimal viable-action rate and the rate restricted to cases where multiple actions were actually available. This is intentionally separate from the existing 200-case isolated-scenario benchmark, whose reset semantics are unchanged.
+## LIMITATIONS
 
-After enforcing the intended precedence of exact authoritative timing memory over aggregate merchant priors, the preregistered run **did not support H1**. Static and adaptive results were identical across all five seeds: mean success **47.56%**, recovered GMV **₹230,700**, cumulative viable-action regret **₹49,971**, and overall optimal viable-action selection **73.33%**. On the 36 genuine decision opportunities per 90-case seed, both selected the optimal action **33.33%** of the time; the higher overall rate includes 54 forced-exploration cases where the sole viable action is automatically optimal. The same-customer, same-instrument, same-failure stream quickly produces exact retry-timing evidence, which correctly dominates generic strategy priors in both conditions. Earlier directional-uplift figures from the prior ordering are superseded and must not be published.
+- All benchmark recovery and GMV are simulated; no production revenue uplift is established.
+- Razorpay execution is Test Mode Payment Links only. There is no automatic card charging or unrestricted retry.
+- Provider-confirmed recovery requires a correlated, verified `payment.captured`; an unpaid link remains pending.
+- Deterministic benchmarks do not evaluate Qwen. The frozen 50-call run is too small to establish production model quality.
+- Production performance, reliability, webhook delivery behavior, and recovery uplift have not been established.
+- Subscription recovery is a bounded proof, not a complete recurring-payments or bank-rail integration.
+- Risk scoring prioritizes a queue; it is not a trained fraud, credit, or collections model.
+- Merchant strategy priors are advisory. The preregistered sequential experiment showed no uplift after exact current timing evidence regained correct precedence; no adaptive-strategy uplift should be claimed.
+- The sample n8n workflow is a demo handoff, not a production case-management system.
 
-This evaluator isolates per-merchant sequential memory but does not test global-to-merchant hierarchical transfer: each merchant starts with a fresh graph, so its cold-start global prior is neutral rather than learned from other merchants. The prototype also bounds the newest outcomes per action only after taking a graph snapshot, and payment-ID correlation is not yet a general order/subscription recovery-episode identity.
+## 5-MINUTE DEMO
 
-The corrected 200-case benchmark at seed 42 uses equivalent episode-scoped retry counts for all three systems and is summarized below:
+1. **00:00–00:25 — Thesis.** Relevant history is not necessarily authoritative history.
+2. **00:25–01:10 — Stale Card Trap.** Run `curated_003`; show old success, replacement edge, rejected audit evidence, sanitized Qwen trace, and the current-policy action.
+3. **01:10–01:40 — Why Waggle.** Run the shadow: validation OFF uses stale timing; ON removes it. Show cached ablation metrics.
+4. **01:40–02:20 — Razorpay Test Mode.** Signed `payment.failed` → approved Payment Link → `PENDING` and recovered zero → complete Test Mode payment → `payment.captured` → provider-confirmed recovery.
+5. **02:20–02:50 — Policy Changed.** Save a version blocking card; show immutable history and a current decision where current policy wins.
+6. **02:50–03:20 — Escalation.** Exhaust attempts; show terminal `ESCALATE`, money movement `NONE`, and n8n ID/disabled/failed state. Replay cannot restart it.
+7. **03:20–04:00 — Batch.** Run 25 cases; show separate money classes, zero unsafe actions/violations, filters, and one decision graph.
+8. **04:00–04:35 — Deterministic proof.** Show 200-case, 1,000-case, and authority-ablation reports; always say SIMULATED GMV.
+9. **04:35–04:55 — Qwen boundary.** Show 100% structured output but 52% candidate/60% post-policy accuracy and zero rejected-memory use: the model is not final financial authority.
+10. **04:55–05:00 — Close.** “Waggle decides what memory is authoritative. Qwen proposes. Policy decides what is allowed. Razorpay confirms whether money was actually recovered.”
 
-| System | Parameter-aware action accuracy | Recovery success | Simulated GMV recovery | Exact stale-evidence rejection |
-| --- | ---: | ---: | ---: | ---: |
-| Waggle Recover | **100%** | **87%** | **86.9%** | **100%** |
-| Contextual History | 76% | 76% | 76.9% | 0% |
-| Blind Fixed Retry | 43% | 43% | 48.0% | 0% |
-
-The former 6% `failed_alternative` error bucket was an orchestration defect, not a retrieval or benchmark-label problem. In all 12/200 main cases and 60/1,000 robustness cases, two failed method-switch attempts correctly led the provider to `STOP`; the orchestrator then rewrote that terminal action to `ESCALATE` because the retry count was one below the configured limit. `STOP` now passes through `PolicyEngine` unchanged. The scenario generator, category weights, action outcomes, and ground-truth actions were not changed.
-
-### Separate robustness evaluation
-
-The robustness suite keeps the main 200-case demo intact and runs 1,000 isolated deterministic scenarios across fixed seeds `11, 29, 47, 83, 131`. It adds explicit blocked-method and temporal-policy-change cases to the existing coverage for transient, permanent, balance, route, replaced-instrument, conflicting-history, no-memory, alternative-method, and attempt-limit cases.
-
-```bash
-cd backend
-WAGGLE_EMBEDDING_MODEL=fake python -c \
-  'from app.evaluation.robustness import run_robustness_evaluation; run_robustness_evaluation(cache_path="data/evaluations/robustness.json")'
-```
-
-The verified System C result is **100% parameter-aware action accuracy**, **87% recovery success**, **87.38% simulated GMV recovery**, **100% stale rejection**, **0% unsafe-action rate**, **0% unnecessary-escalation rate**, and **0% policy-violation rate**. These are seeded simulator results, not production performance or production GMV.
-
-### Temporal-authority ablation
-
-The controlled 200-case ablation now runs the same Waggle retrieval, scoring, ranking, decision, policy, and retry-budget pipeline twice; only temporal validation is switched OFF versus ON. With validation OFF it scored **89% action accuracy**, **76.92% simulated GMV recovery**, and used known stale evidence on **4.55% of stale-memory cases**. With validation ON it scored **100% action accuracy**, **86.92% simulated GMV recovery**, **0% stale use**, and **100% stale rejection**. This isolates the safety and accuracy contribution of temporal authority validation.
-
-```bash
-cd backend
-WAGGLE_EMBEDDING_MODEL=fake python -c \
-  'from app.evaluation.ablations import run_ablation_evaluation; run_ablation_evaluation(cache_path="data/evaluations/ablations.json")'
-```
-
-### Separate Qwen evaluation
-
-`app.evaluation.qwen` evaluates the Qwen candidate and the final post-policy action separately. It reports structured-output validity, candidate and final accuracy, rejected/stale citations, unknown evidence, policy modifications/blocks, safe escalation, fallback, latency, and token usage when available. Concise structured rows can be cached; prompts and chain-of-thought are never persisted.
-
-The frozen live run used seed `31415`, 50 cases, temperature `0`, and `qwen/qwen3.8-27b`. It produced **100% valid structured output**, **52% candidate action accuracy**, and **60% final post-policy action accuracy**. There were **0 fallbacks**, **0 hallucinated evidence citations**, **0 stale-evidence citations across 5 stale-memory cases**, and **0 uses of rejected memory**. Policy blocked and safely escalated 4/50 cases (8%). Mean model latency was **5,964.36 ms**. These are live-model benchmark results on seeded simulated payment scenarios, not production recovery performance.
-
-The structured report is cached at `backend/data/evaluations/qwen.json`. It contains concise candidate/final rows and aggregate metrics only; the API key, prompts, trusted context, rejected contents, and chain-of-thought are not persisted.
-
-### Recovery episodes, escalation, and risk priority
-
-Retry budgets are attached to a stable recovery episode, preferring subscription, mandate, invoice, order, then payment identity. Independent payments do not share attempts; repeated events in the same episode do. When the configured attempt budget is exhausted, the deterministic provider originates `ESCALATE`; policy never derives escalation by rewriting `STOP`. Material evidence conflicts, low confidence, and merchant review requirements can also produce an escalation. The system persists an `EscalationRecord` in SQLite and Waggle; the outcome is `SKIPPED`, human review is required, and money movement is `NONE`.
-
-An explainable 0–100 risk score uses payment value, attempt count, failure class, active instruments, authoritative success history, and conflicts. It prioritizes the operations queue only and cannot bypass `PolicyEngine`.
-
-## Safety boundaries
-
-- Payment instrument aliases only: no PAN, CVV, banking credentials, or secrets.
-- The allowed action set is closed: `RETRY_NOW`, `RETRY_AFTER`, `SUGGEST_METHOD`, `CUSTOMER_NUDGE`, `WAIT_NEXT_CYCLE`, `ESCALATE`, and `STOP`.
-- A policy layer can allow, modify, or block an automation candidate. `STOP` bypasses substitution rules and is intrinsically terminal.
-- Only evidence proven `CURRENT` enters trusted memory; `UNKNOWN`, stale, superseded, and conflicting evidence fail closed into the audit trail.
-- Qwen receives accepted evidence plus only the rejected count and rejection categories. Rejected IDs, labels, actions, outcomes, instruments, timing, and reasons remain audit-only.
-- Agent traces contain structured summaries and latency only—never raw prompts, secrets, or hidden chain-of-thought.
-- Razorpay webhook signatures are verified whenever Test Mode is enabled; webhook processing is idempotent per event/payment pair.
-- Provider event IDs, duplicate protection, replay-window checks, clean malformed-payload responses, and test/simulation indicators are explicit. Real `payment.failed` events remain `PENDING`; only `payment.captured` can persist confirmed recovered money.
-- Merchant policy versions form `new --updates--> old` chains. Superseded policies remain queryable for audit but are excluded from current authority.
-- The subscription/mandate path is advisory only. It reuses recovery memory and policy but does not alter NPCI or bank retry schedules.
-- `STOP` and `ESCALATE` are irreversible per recovery episode. Replayed events cannot restart retrieval, model reasoning, execution, or money movement.
-- Public deployments can set `PROTECT_MUTATION_ENDPOINTS=true` and `MUTATION_API_TOKEN` to require `X-Waggle-Admin-Token` on reset and evaluation mutation endpoints.
-
-## Limitations
-
-- All benchmark GMV and recovery outcomes are simulated.
-- The deterministic 200-case and 1,000-case benchmarks do not evaluate Qwen.
-- The separate live Qwen evaluation covers 50 frozen seeded cases; it is too small to establish production model quality or recovery uplift.
-- Real money movement is intentionally not automated in this prototype. A failure produces a recommendation and `PENDING`; confirmed recovery requires a capture webhook.
-- Production performance, reliability, and recovery uplift have not been established.
-- Adaptive merchant priors are advisory and did not demonstrate the preregistered sequential uplift after exact authoritative timing evidence was restored to its correct precedence.
-- The subscription proof is four curated scenarios, not a complete recurring-payments product or rail integration.
-- The risk score is deterministic queue prioritization, not a trained fraud or credit model.
+Safe claim: **100% parameter-aware action accuracy on the current seeded deterministic 200-case benchmark**, not production. Safe claim: **temporal validation improved deterministic accuracy from 89% to 100% in the controlled seeded ablation**. Never call Test Mode capture real customer revenue, a created Payment Link recovered money, Qwen 100% accurate, or adaptive strategies uplifted.

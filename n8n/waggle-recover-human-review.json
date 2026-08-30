@@ -1,0 +1,62 @@
+{
+  "name": "Waggle Recover — Human Review Handoff",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "waggle-recover-human-review",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook",
+      "name": "Signed handoff",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET is not configured');\nconst raw = JSON.stringify($json.body);\nconst expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');\nconst supplied = String($json.headers['x-waggle-signature'] || '');\nif (supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) throw new Error('Invalid Waggle signature');\nif ($json.body.event_type !== 'recovery.human_review_required' || $json.body.final_action !== 'ESCALATE' || $json.body.money_movement !== 'NONE') throw new Error('Unexpected handoff payload');\nreturn [{ json: { ...$json.body, external_workflow_id: `n8n-${$json.body.escalation_id}`, external_workflow_status: 'CREATED' } }];"
+      },
+      "id": "verify",
+      "name": "Verify signature and boundary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "case-title", "name": "review_case", "value": "={{ 'Human review: ' + $json.escalation_id }}", "type": "string" },
+            { "id": "case-reason", "name": "reason", "value": "={{ $json.reason }}", "type": "string" },
+            { "id": "case-next", "name": "recommended_next_step", "value": "={{ $json.recommended_manual_next_step }}", "type": "string" },
+            { "id": "case-money", "name": "money_movement", "value": "NONE", "type": "string" },
+            { "id": "workflow-id", "name": "workflow_id", "value": "={{ $json.external_workflow_id }}", "type": "string" },
+            { "id": "workflow-status", "name": "status", "value": "CREATED", "type": "string" }
+          ]
+        }
+      },
+      "id": "format",
+      "name": "Create internal review case",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [740, 300]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ $json }}", "options": { "responseCode": 201 } },
+      "id": "respond",
+      "name": "Return workflow ID",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [980, 300]
+    }
+  ],
+  "connections": {
+    "Signed handoff": { "main": [[{ "node": "Verify signature and boundary", "type": "main", "index": 0 }]] },
+    "Verify signature and boundary": { "main": [[{ "node": "Create internal review case", "type": "main", "index": 0 }]] },
+    "Create internal review case": { "main": [[{ "node": "Return workflow ID", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "waggle-recover-demo-v1"
+}

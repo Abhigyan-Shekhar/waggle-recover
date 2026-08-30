@@ -4,9 +4,9 @@ import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-type Metrics = { gmv_at_risk: number; recovered_gmv: number; recovery_rate_pct: number; stale_evidence_prevented: number; policy_violations: number };
+type Metrics = { gmv_at_risk: number; recovered_gmv: number; recovery_rate_pct: number; stale_evidence_prevented: number; policy_violations: number; operational?: { test_mode_pending_gmv?: number; provider_confirmed_recovered_gmv?: number } };
 type Evidence = { waggle_node_id?: string; label?: string; memory_type?: string; temporal_status?: string; relevance_score?: number; rejection_reason?: string; metadata?: { instrument_id?: string; retry_after_seconds?: number; action_type?: string; outcome?: string } };
-type Recovery = { id: string; customer_id: string; amount: number; method: string; instrument_id?: string; failure_code: string; action?: string; recommended_method?: string; retry_after_seconds?: number; outcome?: string; recovered_amount?: number; explanation?: string; evidence_json?: Evidence[]; discarded_json?: Evidence[]; confidence?: number; evidence_confidence?: number; evidence_quality?: string; uncertainty_reason?: string; abstention_reason?: string; recovery_episode_id?: string; policy_result?: string; human_review_required?: boolean | number; escalation_reason?: string; attempt_count?: number; max_automated_attempts?: number; last_safe_action?: string; risk_score?: number; risk_band?: string; risk_factors_json?: string[] };
+type Recovery = { id: string; customer_id: string; merchant_id?: string; amount: number; method: string; instrument_id?: string; failure_code: string; action?: string; recommended_method?: string; retry_after_seconds?: number; outcome?: string; recovered_amount?: number; execution_mode?: string; explanation?: string; evidence_json?: Evidence[]; discarded_json?: Evidence[]; confidence?: number; evidence_confidence?: number; evidence_quality?: string; uncertainty_reason?: string; abstention_reason?: string; recovery_episode_id?: string; policy_result?: string; human_review_required?: boolean | number; escalation_reason?: string; attempt_count?: number; max_automated_attempts?: number; last_safe_action?: string; risk_score?: number; risk_band?: string; risk_factors_json?: string[]; execution_id?: string; execution_provider?: string; provider_execution_id?: string; execution_public_url?: string; execution_status?: string; provider_payment_id?: string; execution_confirmed_at?: string; external_workflow_provider?: string; external_workflow_id?: string; external_workflow_status?: string };
 type Scenario = { id: string; name: string; category?: string; has_stale_memory?: boolean; has_useful_memory?: boolean };
 type SubscriptionScenario = { id: string; name: string; category: string };
 type SystemMetrics = { name: string; action_accuracy_pct: number; success_rate_pct: number; recovery_rate_gmv_pct: number; stale_rejection_rate_pct: number; avg_latency_ms: number };
@@ -29,6 +29,12 @@ type StrategyPrior = {
   global_prior: number; effective_n: number; insufficient_history: boolean; selected_bucket: string;
   authoritative_evidence_ids: string[];
 };
+type ShadowSide = { accepted_evidence: Evidence[]; rejected_evidence_count: number; final_action: string; retry_after_seconds?: number | null; recommended_method?: string | null; known_stale_evidence_influenced_action: boolean; simulated_result: { outcome: string; recovered_amount: number } };
+type AuthorityShadow = { without_authority_validation: ShadowSide; with_authority_validation: ShadowSide; diff: { evidence_removed_count: number; action_change: string; safety_impact: string; simulated_outcome_difference: string }; cached_ablation?: Record<string, any> };
+type BatchCase = { id: string; failure_id: string; customer_id: string; amount: number; risk_score: number; risk_band: string; failure_code: string; action: string; outcome: string; stale_evidence_rejected: number; human_review_required?: boolean | number; recommended_method?: string; retry_after_seconds?: number };
+type RecoveryBatch = { id: string; case_count: number; total_gmv_at_risk: number; simulated_recovered_gmv: number; pending_test_mode_gmv: number; confirmed_test_mode_recovered_gmv: number; stopped_gmv: number; human_review_gmv: number; retry_after_count: number; suggest_method_count: number; customer_nudge_count: number; stop_count: number; escalation_count: number; stale_memories_rejected: number; unsafe_action_count: number; policy_violation_count: number; cases: BatchCase[] };
+type MerchantPolicy = { policy_id?: string; merchant_id: string; version: number; max_recovery_attempts: number; min_retry_interval_seconds: number; max_retry_interval_seconds: number; allowed_actions: string[]; blocked_methods: string[]; blocked_routes: string[]; requires_human_review: boolean; requires_human_review_below_confidence: boolean; min_automatic_confidence: number };
+type PolicyResponse = { current: MerchantPolicy; history: Array<MerchantPolicy & { node_id: string; current: boolean; valid_to?: string | null }> };
 
 const money = (paise = 0) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(paise / 100);
 const actionSummary = (action?: string | null, retry?: number | null, method?: string | null) =>
@@ -193,6 +199,19 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [showAllRecoveries, setShowAllRecoveries] = useState(false);
   const [activitySort, setActivitySort] = useState<"recent" | "risk" | "value">("recent");
+  const [shadow, setShadow] = useState<AuthorityShadow | null>(null);
+  const [shadowRunning, setShadowRunning] = useState(false);
+  const [batch, setBatch] = useState<RecoveryBatch | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchActionFilter, setBatchActionFilter] = useState("ALL");
+  const [batchStatusFilter, setBatchStatusFilter] = useState("ALL");
+  const [batchSort, setBatchSort] = useState<"risk" | "value">("risk");
+  const [batchHumanOnly, setBatchHumanOnly] = useState(false);
+  const [batchStaleOnly, setBatchStaleOnly] = useState(false);
+  const [policyMerchant, setPolicyMerchant] = useState("MERCH-POLICY-DEMO");
+  const [policy, setPolicy] = useState<PolicyResponse | null>(null);
+  const [policyDraft, setPolicyDraft] = useState<MerchantPolicy | null>(null);
+  const [policySaving, setPolicySaving] = useState(false);
   const evaluationRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<HTMLElement | null>(null);
   const agentTraceRef = useRef<HTMLElement | null>(null);
@@ -320,6 +339,49 @@ function App() {
     }
   };
 
+  const runAuthorityShadow = async () => {
+    setShadowRunning(true); setError(null); setMessage("Running the same payment twice with only the authority gate changed…");
+    try {
+      const response = await fetch(`${API}/api/evaluation/authority-shadow/curated_003`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "Authority comparison failed.");
+      setShadow(body); setMessage(`Authority comparison complete · ${body.diff.action_change}`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Authority comparison failed."); }
+    finally { setShadowRunning(false); }
+  };
+
+  const runBatch = async () => {
+    setBatchRunning(true); setError(null); setMessage("Running 25 independent cases through the normal recovery orchestrator…");
+    try {
+      const response = await fetch(`${API}/api/batches/demo?count=25`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "Batch recovery failed.");
+      setBatch(body); setMessage(`Batch ${body.id} complete · ${body.case_count} auditable cases.`); await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Batch recovery failed."); }
+    finally { setBatchRunning(false); }
+  };
+
+  const loadPolicy = async () => {
+    try {
+      const response = await fetch(`${API}/api/policies/${encodeURIComponent(policyMerchant)}`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "Policy could not be loaded.");
+      setPolicy(body); setPolicyDraft(body.current); setError(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Policy could not be loaded."); }
+  };
+
+  const savePolicy = async () => {
+    if (!policyDraft) return;
+    setPolicySaving(true); setError(null);
+    try {
+      const response = await fetch(`${API}/api/policies/${encodeURIComponent(policyMerchant)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(policyDraft) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail?.[0]?.msg ?? body.detail ?? "Policy save failed.");
+      setPolicy(body); setPolicyDraft(body.current); setMessage(`Policy v${body.current.version} is now authoritative; prior versions remain auditable.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Policy save failed."); }
+    finally { setPolicySaving(false); }
+  };
+
   const pauseTour = async (milliseconds: number) => {
     for (let elapsed = 0; elapsed < milliseconds && !demoTourCancelled.current; elapsed += 250) {
       await new Promise(resolve => window.setTimeout(resolve, 250));
@@ -350,6 +412,9 @@ function App() {
       await showTourSection(agentTraceRef.current, "Redacted Qwen context: rejected memory is reduced to count + categories", 6000);
       await showTourSection(graphRef.current, "Memory graph: old card evidence was retained, but rejected as stale", 6500);
 
+      await runAuthorityShadow();
+      await showTourSection(document.getElementById("authority"), "Same payment, two systems: temporal validation is the only changed variable", 6500);
+
       setDecisionMode("deterministic");
       await showTourSection(document.getElementById("simulator"), "Timing Memory: exact validated evidence can be reused", 1000);
       if (demoTourCancelled.current) return;
@@ -360,6 +425,8 @@ function App() {
       if (demoTourCancelled.current) return;
       await runScenario("eval_0007", "deterministic");
       await pauseTour(5000);
+      await loadPolicy();
+      await showTourSection(document.getElementById("policy"), "Current merchant policy supersedes old business rules while preserving audit history", 4500);
 
       if (subscriptionScenarios[0]) {
         await showTourSection(document.getElementById("simulator"), "Subscription recovery: the same evidence and policy boundary", 1000);
@@ -375,6 +442,9 @@ function App() {
       await showTourSection(graphRef.current, "Irreversible terminal state: STOP / ESCALATE cannot restart automation", 5000);
 
       await showTourSection(document.querySelector<HTMLElement>(".strategy-memory"), "Adaptive strategy memory: current evidence only, policy still final", 4500);
+
+      await runBatch();
+      await showTourSection(document.getElementById("batch"), "Merchant batch: independent episodes, separate money classes, zero hidden aggregation", 6000);
 
       if (!evaluation) await runEvaluation();
       setEvaluationTab("main");
@@ -401,19 +471,38 @@ function App() {
   };
 
   const systems = evaluation ? [evaluation.systems.baseline_a, evaluation.systems.baseline_b, evaluation.systems.system_c] : [];
+  const ablationReport = shadow?.cached_ablation ?? evaluationReports?.ablations?.report;
+  const ablationOff = ablationReport?.systems?.waggle_without_temporal_validation;
+  const ablationOn = ablationReport?.systems?.waggle_with_temporal_validation;
+  const togglePolicyList = (field: "allowed_actions" | "blocked_methods", value: string) => {
+    if (!policyDraft) return;
+    const current = policyDraft[field];
+    setPolicyDraft({ ...policyDraft, [field]: current.includes(value) ? current.filter(item => item !== value) : [...current, value] });
+  };
+  const openBatchCase = async (item: BatchCase) => {
+    const row = recoveries.find(recovery => recovery.id === item.failure_id);
+    if (row) await inspectRecovery(row, true);
+  };
+  const visibleBatchCases = [...(batch?.cases ?? [])]
+    .filter(item => batchActionFilter === "ALL" || item.action === batchActionFilter)
+    .filter(item => batchStatusFilter === "ALL" || item.outcome === batchStatusFilter)
+    .filter(item => !batchHumanOnly || item.action === "ESCALATE" || Boolean(item.human_review_required))
+    .filter(item => !batchStaleOnly || item.stale_evidence_rejected > 0)
+    .sort((a, b) => batchSort === "risk" ? b.risk_score - a.risk_score : b.amount - a.amount);
   const rejectedEvidence = selected?.discarded_json ?? [];
   const acceptedEvidence = selected?.evidence_json ?? [];
   const staleInstrument = rejectedEvidence.find(item => item.metadata?.instrument_id)?.metadata?.instrument_id;
   const rejectedRetrySeconds = rejectedEvidence.find(item => item.metadata?.retry_after_seconds)?.metadata?.retry_after_seconds;
   const hasRejectedMemory = Boolean(staleInstrument && selected?.instrument_id);
   const escalationRequired = Boolean(selected && (selected.action === "ESCALATE" || selected.human_review_required));
+  const selectedOutcomeLabel = escalationRequired ? "HUMAN REVIEW" : selected?.execution_mode === "simulation" ? `SIMULATED ${selected.outcome ?? "PENDING"}` : selected?.execution_status === "SUCCESS" ? "PROVIDER CONFIRMED" : selected?.outcome ?? "PENDING";
   const sortedRecoveries = [...recoveries].sort((a, b) => activitySort === "risk" ? (b.risk_score ?? 0) - (a.risk_score ?? 0) : activitySort === "value" ? b.amount - a.amount : 0);
   const visibleRecoveries = showAllRecoveries ? sortedRecoveries : sortedRecoveries.slice(0, 10);
 
   return <div className="app-shell">
     <nav className="topbar" aria-label="Primary navigation">
       <a className="brand" href="#overview"><BrandMark /><span>Waggle <b>Recover</b></span></a>
-      <div className="nav-links"><a href="#simulator">Simulator</a><a href="#memory">Memory graph</a><a href="#benchmark">Benchmark</a><a href="#activity">Activity</a></div>
+      <div className="nav-links"><a href="#simulator">Simulator</a><a href="#authority">Authority</a><a href="#batch">Batch</a><a href="#policy">Policy</a><a href="#benchmark">Benchmark</a></div>
       <span className={`service-status ${error ? "offline" : ""}`}><i />{error ? "Needs attention" : "Local system live"}</span>
     </nav>
     {demoTourRunning && <div className="demo-tour-status" role="status" aria-live="polite"><span className="spinner" /> <b>Demo tour running</b><span>{demoTourStep}</span><button onClick={stopDemoTour}>Stop tour</button></div>}
@@ -449,7 +538,7 @@ function App() {
       <section className="metric-rail" aria-label="Recovery overview">
         {booting ? Array.from({ length: 5 }, (_, index) => <div className="metric skeleton" key={index} />) : <>
           <div className="metric"><span>GMV at risk</span><strong>{money(metrics?.gmv_at_risk)}</strong><small>across recorded failures</small></div>
-          <div className="metric featured"><span>Recovered GMV</span><strong>{money(metrics?.recovered_gmv)}</strong><small>{metrics?.recovery_rate_pct ?? 0}% of at-risk value</small></div>
+          <div className="metric featured"><span>Simulated recovered GMV</span><strong>{money(metrics?.recovered_gmv)}</strong><small>SIMULATED · {metrics?.recovery_rate_pct ?? 0}% of at-risk value</small></div>
           <div className="metric"><span>Stale evidence blocked</span><strong>{metrics?.stale_evidence_prevented ?? 0}</strong><small>unsafe memories excluded</small></div>
           <div className="metric"><span>Policy violations</span><strong>{metrics?.policy_violations ?? 0}</strong><small>{metrics?.policy_violations ? "requires review" : "guardrails intact"}</small></div>
           <div className="metric policy"><span>Recovery policy</span><strong>{metrics?.policy_violations ? "Review" : "Clear"}</strong><small><i /> deterministic enforcement</small></div>
@@ -484,16 +573,18 @@ function App() {
           </article>
 
           <article className="inspector" aria-live="polite">
-            <div className="inspector-header"><div><span>Decision inspector</span><small>{selected ? `Failure ${selected.id.slice(0, 12)}` : "Awaiting a completed scenario"}</small></div>{selected && <span className={`outcome-chip ${escalationRequired ? "failure" : selected.outcome?.toLowerCase()}`}>{escalationRequired ? "HUMAN REVIEW" : selected.outcome ?? "PENDING"}</span>}</div>
+            <div className="inspector-header"><div><span>Decision inspector</span><small>{selected ? `Failure ${selected.id.slice(0, 12)}` : "Awaiting a completed scenario"}</small></div>{selected && <span className={`outcome-chip ${escalationRequired ? "failure" : selected.outcome?.toLowerCase()}`}>{selectedOutcomeLabel}</span>}</div>
             {selected ? <>
               {hasRejectedMemory && <div className="stale-alert"><span className="alert-kicker">Waggle safety intervention</span><strong>Stale memory rejected</strong><span className="instrument-swap"><b>{staleInstrument}</b><i>→</i><b>{selected.instrument_id}</b></span><p>Historical {rejectedRetrySeconds ? `${Math.round(rejectedRetrySeconds / 60)}-minute retry` : "recovery"} belonged to the replaced card and could not drive this decision.</p></div>}
               {escalationRequired && <div className="escalation-alert"><span className="alert-kicker">Autonomous boundary enforced</span><strong>Human review required</strong><p><b>Automated recovery stopped</b><br />Reason: {selected.escalation_reason || "Maximum automated recovery attempts reached"}<br />Attempts used: {selected.attempt_count ?? 0} / {selected.max_automated_attempts ?? 3}<br />Policy result: {selected.policy_result || "BLOCK"}<br />Money movement: <b>NONE</b></p><small>Recommended next step: Manual review / customer outreach</small></div>}
+              {selected.execution_id && <div className={`execution-panel ${selected.execution_status?.toLowerCase()}`}><span className="alert-kicker">Razorpay Test Mode Execution</span><strong>{selected.execution_status === "SUCCESS" ? "Confirmed by Razorpay webhook" : "Test payment waiting"}</strong><p><b>TEST MODE — NO REAL MONEY</b><br />Recovery action: {actionSummary(selected.action, selected.retry_after_seconds, selected.recommended_method)}<br />Provider: Razorpay Test Mode<br />Payment Link ID: {selected.provider_execution_id}<br />Execution status: {selected.execution_status}<br />Confirmation: {selected.execution_status === "SUCCESS" ? `payment.captured · ${money(selected.recovered_amount)}` : "WAITING FOR payment.captured"}</p>{selected.execution_public_url && selected.execution_status === "PENDING" && <a href={selected.execution_public_url} target="_blank" rel="noreferrer">Open test payment →</a>}</div>}
+              {escalationRequired && selected.external_workflow_provider && <div className="workflow-panel"><span className="alert-kicker">Operational handoff</span><strong>External workflow: {selected.external_workflow_status}</strong><p>Provider: {selected.external_workflow_provider}<br />Workflow ID: {selected.external_workflow_id ?? "Not created"}<br />Reason: {selected.escalation_reason}<br />Money movement: <b>NONE</b></p></div>}
               <div className="decision-flow">
                 <div className="decision-step failure-step"><span>Failure</span><strong>{selected.failure_code}</strong><small>{selected.method} · {money(selected.amount)}</small></div>
                 <div className={`flow-link ${hasRejectedMemory ? "rejected" : escalationRequired ? "blocked" : ""}`}><span>{hasRejectedMemory ? "rejected" : escalationRequired ? "blocked" : "validated"}</span></div>
                 <div className={`decision-step ${hasRejectedMemory ? "rejected-step" : escalationRequired ? "blocked-step" : "evidence-step"}`}><span>{escalationRequired ? "Policy Guard" : "Evidence"}</span><strong>{escalationRequired ? "BLOCK" : hasRejectedMemory ? "Not current" : "Validated"}</strong><small>{escalationRequired ? `${selected.attempt_count ?? 0}/${selected.max_automated_attempts ?? 3} attempts used` : hasRejectedMemory ? `${staleInstrument} superseded` : "exact scope only"}</small></div>
                 <div className="flow-link"><span>policy</span></div>
-                <div className={`decision-step action-step ${escalationRequired ? "escalation-step" : ""}`}><span>Final action</span><strong>{actionSummary(selected.action, selected.retry_after_seconds, selected.recommended_method)}</strong><small>{escalationRequired ? "Human review · no payment action" : selected.outcome ?? "pending outcome"}</small></div>
+                <div className={`decision-step action-step ${escalationRequired ? "escalation-step" : ""}`}><span>Final action</span><strong>{actionSummary(selected.action, selected.retry_after_seconds, selected.recommended_method)}</strong><small>{escalationRequired ? "Human review · no payment action" : selectedOutcomeLabel}</small></div>
               </div>
               <div className="confidence-strip"><div><span>Decision confidence</span><strong>{Math.round((selected.confidence ?? 0) * 100)}%</strong></div><div><span>Evidence quality</span><strong>{selected.evidence_quality ?? "UNKNOWN"} · {Math.round((selected.evidence_confidence ?? 0) * 100)}%</strong></div><div><span>Priority risk</span><strong>{selected.risk_score ?? 0} · {selected.risk_band ?? "LOW"}</strong></div><p>{selected.abstention_reason || selected.uncertainty_reason || selected.risk_factors_json?.join(" · ") || "No material uncertainty recorded."}</p></div>
               <div className="audit-row"><details><summary>Decision explanation</summary><p>{selected.explanation || "No explanation recorded."}</p></details><details open><summary>Evidence audit · {acceptedEvidence.length} accepted · {rejectedEvidence.length} rejected</summary><div className="evidence-audit"><section><h4>Accepted evidence</h4>{acceptedEvidence.length ? acceptedEvidence.map((item, index) => <div className="evidence-item accepted" key={item.waggle_node_id ?? index}><b>{item.label || item.memory_type || "Validated memory"}</b><span>{item.metadata?.action_type ? actionSummary(item.metadata.action_type, item.metadata.retry_after_seconds) : item.temporal_status || "current"}</span><small>{item.waggle_node_id || "Recorded Waggle node"}</small></div>) : <p className="evidence-empty">No historical memory was needed for this decision.</p>}</section><section><h4>Rejected evidence</h4>{rejectedEvidence.length ? rejectedEvidence.map((item, index) => <div className="evidence-item rejected" key={item.waggle_node_id ?? index}><b>{item.label || item.memory_type || "Excluded memory"}</b><span>{item.rejection_reason || "Outside the authoritative scope"}</span><small>{item.waggle_node_id || "Recorded Waggle node"}</small></div>) : <p className="evidence-empty">No stale or superseded memory was retrieved.</p>}</section><details className="raw-evidence"><summary>Raw audit JSON</summary><pre>{JSON.stringify({ accepted: acceptedEvidence, rejected: rejectedEvidence }, null, 2)}</pre></details></div></details></div>
@@ -511,8 +602,32 @@ function App() {
         <GraphView graph={graph} loading={graphLoading} />
       </section>
 
+      <section className="authority-section" id="authority">
+        <div className="section-heading"><div><p className="section-index">03 / WHY WAGGLE?</p><h2>Same payment. Two authority systems.</h2></div><div><p>Both sides retrieve context. Only Waggle proves whether that context is still allowed to influence the decision.</p><button className="primary-action" disabled={shadowRunning} onClick={() => void runAuthorityShadow()}>{shadowRunning ? <><span className="spinner dark" /> Comparing</> : <>Run live shadow comparison <span>→</span></>}</button></div></div>
+        <div className="authority-grid">
+          <article className="authority-card context-only"><div className="authority-title"><span>Context only</span><b>Temporal validator OFF</b></div><h3>{shadow ? actionSummary(shadow.without_authority_validation.final_action, shadow.without_authority_validation.retry_after_seconds, shadow.without_authority_validation.recommended_method) : "Retrieved ≠ trustworthy"}</h3><dl><div><dt>Accepted evidence</dt><dd>{shadow?.without_authority_validation.accepted_evidence.length ?? "—"}</dd></div><div><dt>Known stale influence</dt><dd>{shadow ? (shadow.without_authority_validation.known_stale_evidence_influenced_action ? "YES" : "NO") : "—"}</dd></div><div><dt>Simulated outcome</dt><dd>{shadow?.without_authority_validation.simulated_result.outcome ?? "—"}</dd></div><div><dt>Frozen ablation stale use</dt><dd>{ablationOff ? reportPct(ablationOff.stale_evidence_usage_rate) : "—"}</dd></div></dl></article>
+          <article className="authority-card waggle-authority"><div className="authority-title"><span>Waggle authority</span><b>Fail-closed validation ON</b></div><h3>{shadow ? actionSummary(shadow.with_authority_validation.final_action, shadow.with_authority_validation.retry_after_seconds, shadow.with_authority_validation.recommended_method) : "Current evidence only"}</h3><dl><div><dt>Accepted evidence</dt><dd>{shadow?.with_authority_validation.accepted_evidence.length ?? "—"}</dd></div><div><dt>Stale evidence rejected</dt><dd>{shadow?.with_authority_validation.rejected_evidence_count ?? "—"}</dd></div><div><dt>Known stale influence</dt><dd>{shadow ? (shadow.with_authority_validation.known_stale_evidence_influenced_action ? "YES" : "NO") : "—"}</dd></div><div><dt>Frozen ablation accuracy</dt><dd>{ablationOn ? reportPct(ablationOn.action_accuracy) : "—"}</dd></div></dl></article>
+        </div>
+        {shadow && <div className="authority-diff"><span>Evidence removed <b>{shadow.diff.evidence_removed_count}</b></span><span>Action change <b>{shadow.diff.action_change}</b></span><span>Safety impact <b>{shadow.diff.safety_impact}</b></span><span>Outcome delta <b>{shadow.diff.simulated_outcome_difference}</b></span></div>}
+      </section>
+
+      <section className="batch-section" id="batch">
+        <div className="section-heading"><div><p className="section-index">04 / BATCH RECOVERY</p><h2>One merchant. Twenty-five independent decisions.</h2></div><div><p>Every case uses the normal orchestrator, its own episode identity, its own evidence audit, and the same deterministic Policy Guard.</p><button className="primary-action" disabled={batchRunning} onClick={() => void runBatch()}>{batchRunning ? <><span className="spinner dark" /> Running 25 cases</> : <>Run 25-case batch <span>→</span></>}</button></div></div>
+        {batch ? <>
+          <div className="batch-summary"><div><span>GMV at risk</span><strong>{money(batch.total_gmv_at_risk)}</strong><small>{batch.case_count} independent cases</small></div><div className="simulation"><span>SIMULATED recovered</span><strong>{money(batch.simulated_recovered_gmv)}</strong><small>not production uplift</small></div><div><span>TEST pending</span><strong>{money(batch.pending_test_mode_gmv)}</strong><small>not recovered</small></div><div><span>Provider confirmed</span><strong>{money(batch.confirmed_test_mode_recovered_gmv)}</strong><small>captured webhook only</small></div><div><span>Human / stopped</span><strong>{money(batch.human_review_gmv + batch.stopped_gmv)}</strong><small>no money movement</small></div></div>
+          <div className="batch-safety"><span><b>{batch.stale_memories_rejected}</b> stale memories rejected</span><span><b>{batch.unsafe_action_count}</b> unsafe actions</span><span><b>{batch.policy_violation_count}</b> policy violations</span><span>Actions: {batch.retry_after_count} retry · {batch.suggest_method_count} suggest · {batch.customer_nudge_count} nudge · {batch.stop_count} stop · {batch.escalation_count} escalate</span></div>
+          <div className="batch-controls"><label>Action<select value={batchActionFilter} onChange={event => setBatchActionFilter(event.target.value)}><option>ALL</option><option>RETRY_AFTER</option><option>SUGGEST_METHOD</option><option>CUSTOMER_NUDGE</option><option>STOP</option><option>ESCALATE</option></select></label><label>Status<select value={batchStatusFilter} onChange={event => setBatchStatusFilter(event.target.value)}><option>ALL</option><option>SUCCESS</option><option>FAILURE</option><option>PENDING</option><option>SKIPPED</option></select></label><label>Sort<select value={batchSort} onChange={event => setBatchSort(event.target.value as "risk" | "value")}><option value="risk">Highest risk</option><option value="value">Highest value</option></select></label><label className="check-control"><input type="checkbox" checked={batchHumanOnly} onChange={event => setBatchHumanOnly(event.target.checked)} /> Human review only</label><label className="check-control"><input type="checkbox" checked={batchStaleOnly} onChange={event => setBatchStaleOnly(event.target.checked)} /> Stale evidence only</label></div>
+          <div className="table-frame batch-table"><table><thead><tr><th>Customer</th><th>GMV</th><th>Risk</th><th>Failure</th><th>Final action</th><th>Outcome class</th><th>Stale blocked</th></tr></thead><tbody>{visibleBatchCases.map(item => <tr key={item.id} tabIndex={0} onClick={() => void openBatchCase(item)} onKeyDown={event => { if (event.key === "Enter") void openBatchCase(item); }}><td>{item.customer_id}</td><td>{money(item.amount)}</td><td><span className={`risk-chip ${item.risk_band.toLowerCase()}`}>{item.risk_score} · {item.risk_band}</span></td><td><span className="failure-code">{item.failure_code}</span></td><td>{actionSummary(item.action, item.retry_after_seconds, item.recommended_method)}</td><td>{item.action === "ESCALATE" ? "HUMAN REVIEW" : `SIMULATED ${item.outcome}`}</td><td>{item.stale_evidence_rejected}</td></tr>)}</tbody></table></div>
+        </> : <div className="feature-empty"><strong>No batch run yet</strong><span>Run the fixed 25-case batch to open an operator queue without conflating independent payments.</span></div>}
+      </section>
+
+      <section className="policy-section" id="policy">
+        <div className="section-heading"><div><p className="section-index">05 / MERCHANT POLICY</p><h2>Policy is versioned authority.</h2></div><p>Updates create a new Waggle node and invalidate the old version for future decisions. History remains queryable for audit.</p></div>
+        <div className="policy-console"><aside><label>Merchant ID<input value={policyMerchant} onChange={event => setPolicyMerchant(event.target.value)} /></label><button className="primary-action" onClick={() => void loadPolicy()}>Load policy</button>{policy?.history.map(item => <button className={`policy-version ${item.current ? "current" : ""}`} key={item.node_id} onClick={() => setPolicyDraft(item)}><span>Version {item.version}</span><b>{item.current ? "CURRENT" : "AUDIT ONLY"}</b><small>{item.valid_to ? `invalidated ${new Date(item.valid_to).toLocaleString()}` : "authoritative now"}</small></button>)}</aside>{policyDraft ? <div className="policy-form"><div className="policy-fields"><label>Max attempts<input type="number" min="0" max="20" value={policyDraft.max_recovery_attempts} onChange={event => setPolicyDraft({ ...policyDraft, max_recovery_attempts: Number(event.target.value) })} /></label><label>Min retry seconds<input type="number" min="0" value={policyDraft.min_retry_interval_seconds} onChange={event => setPolicyDraft({ ...policyDraft, min_retry_interval_seconds: Number(event.target.value) })} /></label><label>Max retry seconds<input type="number" min="0" value={policyDraft.max_retry_interval_seconds} onChange={event => setPolicyDraft({ ...policyDraft, max_retry_interval_seconds: Number(event.target.value) })} /></label><label>Automatic confidence<input type="number" min="0" max="1" step="0.05" value={policyDraft.min_automatic_confidence} onChange={event => setPolicyDraft({ ...policyDraft, min_automatic_confidence: Number(event.target.value) })} /></label></div><fieldset><legend>Allowed actions</legend>{["RETRY_AFTER", "SUGGEST_METHOD", "CUSTOMER_NUDGE", "STOP"].map(action => <label key={action}><input type="checkbox" checked={policyDraft.allowed_actions.includes(action)} onChange={() => togglePolicyList("allowed_actions", action)} /> {action.replaceAll("_", " ")}</label>)}</fieldset><fieldset><legend>Blocked methods</legend>{["card", "upi", "netbanking", "wallet"].map(method => <label key={method}><input type="checkbox" checked={policyDraft.blocked_methods.includes(method)} onChange={() => togglePolicyList("blocked_methods", method)} /> {method}</label>)}</fieldset><fieldset><legend>Blocked routes</legend><label>Comma-separated route IDs<input value={policyDraft.blocked_routes.join(", ")} onChange={event => setPolicyDraft({ ...policyDraft, blocked_routes: event.target.value.split(",").map(value => value.trim()).filter(Boolean) })} /></label></fieldset><label className="check-control"><input type="checkbox" checked={policyDraft.requires_human_review_below_confidence} onChange={event => setPolicyDraft({ ...policyDraft, requires_human_review_below_confidence: event.target.checked })} /> Require human review below confidence threshold</label><button className="primary-action" disabled={policySaving} onClick={() => void savePolicy()}>{policySaving ? "Saving new version…" : "Save as new authoritative version"}</button></div> : <div className="feature-empty"><strong>Load a merchant policy</strong><span>The default policy appears here before you create a versioned update.</span></div>}</div>
+      </section>
+
       <section className="evaluation-section" id="benchmark" ref={evaluationRef}>
-        <div className="evaluation-heading"><div><p className="section-index">03 / BENCHMARK</p><h2>Same histories. Three recovery systems.</h2><p>Seed 42 · parameter-aware scoring · deterministic outcome model · no Groq calls</p></div><button className="primary-action" disabled={evaluationRunning} onClick={() => void runEvaluation()}>{evaluationRunning ? <><span className="spinner dark" /> Evaluating 200 cases</> : <>Run 200-case evaluation <span>→</span></>}</button></div>
+        <div className="evaluation-heading"><div><p className="section-index">06 / BENCHMARK</p><h2>Same histories. Three recovery systems.</h2><p>Seed 42 · parameter-aware scoring · deterministic outcome model · SIMULATED GMV · no Groq calls</p></div><button className="primary-action" disabled={evaluationRunning} onClick={() => void runEvaluation()}>{evaluationRunning ? <><span className="spinner dark" /> Evaluating 200 cases</> : <>Run 200-case evaluation <span>→</span></>}</button></div>
         <div className="benchmark-tabs" role="tablist" aria-label="Evaluation reports">{([['main', 'Main 200-case'], ['robustness', 'Robustness'], ['ablations', 'Ablations'], ['qwen', 'Qwen']] as const).map(([key, label]) => <button role="tab" aria-selected={evaluationTab === key} className={evaluationTab === key ? "active" : ""} onClick={() => setEvaluationTab(key)} key={key}>{label}</button>)}</div>
         {evaluationTab === "main" && (evaluation ? <>
           <div className="proof-strip"><div><span>Waggle action accuracy</span><strong>{evaluation.systems.system_c.action_accuracy_pct}%</strong></div><div><span>Recovery success</span><strong>{evaluation.systems.system_c.success_rate_pct}%</strong></div><div><span>Simulated GMV recovery</span><strong>{evaluation.systems.system_c.recovery_rate_gmv_pct}%</strong></div><div><span>Exact stale rejection</span><strong>{evaluation.systems.system_c.stale_rejection_rate_pct}%</strong></div></div>
@@ -523,12 +638,12 @@ function App() {
       </section>
 
       <section className="activity-section" id="activity">
-        <div className="section-heading compact"><div><p className="section-index">04 / ACTIVITY</p><h2>Recent recovery decisions</h2></div><div className="activity-controls"><label>Sort queue<select value={activitySort} onChange={event => setActivitySort(event.target.value as "recent" | "risk" | "value")}><option value="recent">Most recent</option><option value="risk">Highest risk</option><option value="value">Highest value</option></select></label></div></div>
-        <div className="table-frame activity-table"><table><thead><tr><th>Customer</th><th>Amount</th><th>Risk</th><th>Failure</th><th>Decision</th><th>Outcome</th><th><span className="sr-only">Action</span></th></tr></thead><tbody>{visibleRecoveries.map((row, index) => <tr key={`${row.id}-${row.action ?? "pending"}-${row.outcome ?? "pending"}-${index}`}><td data-label="Customer"><b>{row.customer_id}</b><small>{row.method} · {row.instrument_id ?? "instrument unknown"}</small></td><td data-label="Amount">{money(row.amount)}</td><td data-label="Risk"><span className={`risk-chip ${(row.risk_band ?? "low").toLowerCase()}`}>{row.risk_score ?? 0} · {row.risk_band ?? "LOW"}</span></td><td data-label="Failure"><span className="failure-code">{row.failure_code}</span></td><td data-label="Decision">{actionSummary(row.action, row.retry_after_seconds, row.recommended_method)}</td><td data-label="Outcome"><span className={`outcome-text ${row.action === "ESCALATE" ? "escalated" : row.outcome?.toLowerCase()}`}>{row.action === "ESCALATE" ? "HUMAN REVIEW" : row.outcome ?? "PENDING"}</span>{row.action === "ESCALATE" ? <small>no money movement</small> : row.recovered_amount ? <small>{money(row.recovered_amount)} recovered</small> : null}</td><td><button className="text-action" onClick={() => void inspectRecovery(row, true)}>Open graph <span>→</span></button></td></tr>)}{!recoveries.length && <tr><td colSpan={7}><div className="table-empty">No recoveries yet. The first scenario will appear here with its decision and outcome.</div></td></tr>}</tbody></table></div>
+        <div className="section-heading compact"><div><p className="section-index">07 / ACTIVITY</p><h2>Recent recovery decisions</h2></div><div className="activity-controls"><label>Sort queue<select value={activitySort} onChange={event => setActivitySort(event.target.value as "recent" | "risk" | "value")}><option value="recent">Most recent</option><option value="risk">Highest risk</option><option value="value">Highest value</option></select></label></div></div>
+        <div className="table-frame activity-table"><table><thead><tr><th>Customer</th><th>Amount</th><th>Risk</th><th>Failure</th><th>Decision</th><th>Outcome</th><th><span className="sr-only">Action</span></th></tr></thead><tbody>{visibleRecoveries.map((row, index) => { const rowOutcome = row.action === "ESCALATE" ? "HUMAN REVIEW" : row.execution_mode === "simulation" ? `SIMULATED ${row.outcome ?? "PENDING"}` : row.execution_status === "SUCCESS" ? "PROVIDER CONFIRMED" : row.outcome ?? "PENDING"; return <tr key={`${row.id}-${row.action ?? "pending"}-${row.outcome ?? "pending"}-${index}`}><td data-label="Customer"><b>{row.customer_id}</b><small>{row.method} · {row.instrument_id ?? "instrument unknown"}</small></td><td data-label="Amount">{money(row.amount)}</td><td data-label="Risk"><span className={`risk-chip ${(row.risk_band ?? "low").toLowerCase()}`}>{row.risk_score ?? 0} · {row.risk_band ?? "LOW"}</span></td><td data-label="Failure"><span className="failure-code">{row.failure_code}</span></td><td data-label="Decision">{actionSummary(row.action, row.retry_after_seconds, row.recommended_method)}</td><td data-label="Outcome"><span className={`outcome-text ${row.action === "ESCALATE" ? "escalated" : row.outcome?.toLowerCase()}`}>{rowOutcome}</span>{row.action === "ESCALATE" ? <small>no money movement</small> : row.recovered_amount ? <small>{row.execution_mode === "simulation" ? "simulated " : ""}{money(row.recovered_amount)} recovered</small> : null}</td><td><button className="text-action" onClick={() => void inspectRecovery(row, true)}>Open graph <span>→</span></button></td></tr>; })}{!recoveries.length && <tr><td colSpan={7}><div className="table-empty">No recoveries yet. The first scenario will appear here with its decision and outcome.</div></td></tr>}</tbody></table></div>
         {recoveries.length > 10 && <button className="show-more" onClick={() => setShowAllRecoveries(value => !value)}>{showAllRecoveries ? "Show latest 10" : `Show all ${recoveries.length} recoveries`}</button>}
       </section>
     </main>
-    <footer><div className="brand"><BrandMark /><span>Waggle Recover</span></div><p>Prototype recovery decisions only. Razorpay webhooks remain policy-controlled.</p><a href="#overview">Back to top ↑</a></footer>
+    <footer><div className="brand"><BrandMark /><span>Waggle Recover</span></div><p>Test Mode execution and simulated evaluation only. Razorpay webhooks remain policy-controlled.</p><a href="#overview">Back to top ↑</a></footer>
   </div>;
 }
 

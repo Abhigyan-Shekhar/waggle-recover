@@ -34,7 +34,16 @@ class Settings(BaseSettings):
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
     razorpay_enabled: bool = False
+    razorpay_test_execution_enabled: bool = False
+    razorpay_api_base_url: str = "https://api.razorpay.com/v1"
+    razorpay_payment_link_expiry_seconds: int = 86400
     webhook_replay_window_seconds: int = 86400
+
+    # Optional operational handoff. This never changes a recovery decision.
+    n8n_enabled: bool = False
+    n8n_escalation_webhook_url: str = ""
+    n8n_webhook_secret: str = ""
+    n8n_timeout_seconds: float = 5.0
 
     # Decision engine
     decision_provider: str = "deterministic"  # deterministic / llm / agent

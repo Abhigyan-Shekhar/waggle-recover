@@ -133,9 +133,70 @@ CREATE TABLE IF NOT EXISTS escalation_records (
     rejected_evidence_json TEXT DEFAULT '[]',
     recommended_manual_next_step TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'PENDING',
+    external_workflow_provider TEXT DEFAULT NULL,
+    external_workflow_id TEXT DEFAULT NULL,
+    external_workflow_status TEXT DEFAULT NULL,
+    external_workflow_created_at TEXT DEFAULT NULL,
     waggle_node_id TEXT DEFAULT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (recovery_episode_id) REFERENCES recovery_episodes(id)
+);
+
+CREATE TABLE IF NOT EXISTS recovery_executions (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    execution_type TEXT NOT NULL,
+    recovery_episode_id TEXT NOT NULL,
+    failure_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    provider_execution_id TEXT DEFAULT NULL,
+    public_url TEXT DEFAULT NULL,
+    provider_payment_id TEXT DEFAULT NULL,
+    provider_status TEXT DEFAULT NULL,
+    failure_reason TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    confirmed_at TEXT DEFAULT NULL,
+    waggle_node_id TEXT DEFAULT NULL,
+    UNIQUE(recovery_episode_id, execution_type),
+    UNIQUE(provider_execution_id),
+    UNIQUE(provider_payment_id),
+    FOREIGN KEY (failure_id) REFERENCES payment_failures(id),
+    FOREIGN KEY (decision_id) REFERENCES recovery_decisions(id)
+);
+
+CREATE TABLE IF NOT EXISTS recovery_batches (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    case_count INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS batch_recovery_cases (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    failure_id TEXT NOT NULL,
+    recovery_episode_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    risk_score INTEGER NOT NULL,
+    risk_band TEXT NOT NULL,
+    stale_evidence_rejected INTEGER NOT NULL DEFAULT 0,
+    policy_blocked INTEGER NOT NULL DEFAULT 0,
+    unsafe_action INTEGER NOT NULL DEFAULT 0,
+    policy_violation INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (batch_id) REFERENCES recovery_batches(id),
+    FOREIGN KEY (failure_id) REFERENCES payment_failures(id)
 );
 
 CREATE TABLE IF NOT EXISTS payment_instruments (
@@ -189,6 +250,9 @@ CREATE INDEX IF NOT EXISTS idx_instruments_customer ON payment_instruments(custo
 CREATE INDEX IF NOT EXISTS idx_eval_results_run ON evaluation_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_webhook_payment ON webhook_events(payment_id);
 CREATE INDEX IF NOT EXISTS idx_escalation_episode ON escalation_records(recovery_episode_id);
+CREATE INDEX IF NOT EXISTS idx_execution_episode ON recovery_executions(recovery_episode_id);
+CREATE INDEX IF NOT EXISTS idx_execution_decision ON recovery_executions(decision_id);
+CREATE INDEX IF NOT EXISTS idx_batch_case_batch ON batch_recovery_cases(batch_id);
 """
 
 
@@ -237,6 +301,12 @@ class Database:
                 "webhook_events": {"provider_event_id": "TEXT NOT NULL DEFAULT ''"},
                 "payment_failures": {"recovery_episode_id": "TEXT DEFAULT ''"},
                 "recovery_attempts": {"recovery_episode_id": "TEXT DEFAULT ''"},
+                "escalation_records": {
+                    "external_workflow_provider": "TEXT DEFAULT NULL",
+                    "external_workflow_id": "TEXT DEFAULT NULL",
+                    "external_workflow_status": "TEXT DEFAULT NULL",
+                    "external_workflow_created_at": "TEXT DEFAULT NULL",
+                },
             }
             for table, definitions in table_additions.items():
                 existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -259,6 +329,7 @@ class Database:
         with self._connect() as conn:
             for table in (
                 "evaluation_results", "evaluation_runs", "recovery_attempts",
+                "batch_recovery_cases", "recovery_batches", "recovery_executions",
                 "escalation_records", "recovery_decisions", "payment_failures", "recovery_episodes", "payment_instruments",
                 "webhook_events",
             ):
@@ -448,12 +519,16 @@ class Database:
                     customer_id, amount, failure_reason, attempts_used, max_automated_attempts, candidate_action,
                     policy_result, escalation_reason, accepted_evidence_json,
                     rejected_evidence_json, recommended_manual_next_step, state,
+                    external_workflow_provider, external_workflow_id,
+                    external_workflow_status, external_workflow_created_at,
                     waggle_node_id, created_at
                 ) VALUES (
                     :id, :recovery_episode_id, :failure_id, :decision_id, :merchant_id,
                     :customer_id, :amount, :failure_reason, :attempts_used, :max_automated_attempts, :candidate_action,
                     :policy_result, :escalation_reason, :accepted_evidence_json,
                     :rejected_evidence_json, :recommended_manual_next_step, :state,
+                    :external_workflow_provider, :external_workflow_id,
+                    :external_workflow_status, :external_workflow_created_at,
                     :waggle_node_id, :created_at
                 )
                 ON CONFLICT(id) DO UPDATE SET state=excluded.state, waggle_node_id=excluded.waggle_node_id
@@ -461,6 +536,197 @@ class Database:
                 escalation,
             )
             conn.commit()
+
+    def update_escalation_workflow(self, escalation_id: str, handoff: dict[str, Any]) -> None:
+        self.execute_write(
+            """
+            UPDATE escalation_records
+            SET external_workflow_provider=?, external_workflow_id=?,
+                external_workflow_status=?, external_workflow_created_at=?
+            WHERE id=?
+            """,
+            (
+                handoff.get("provider"), handoff.get("workflow_id"), handoff.get("status"),
+                handoff.get("created_at").isoformat() if handoff.get("created_at") else None,
+                escalation_id,
+            ),
+        )
+
+    def upsert_execution(self, execution: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM recovery_executions WHERE recovery_episode_id=? AND execution_type=?",
+                (execution["recovery_episode_id"], execution["execution_type"]),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            conn.execute(
+                """
+                INSERT INTO recovery_executions (
+                    id, provider, execution_type, recovery_episode_id, failure_id,
+                    decision_id, attempt_id, merchant_id, customer_id, amount,
+                    currency, status, provider_execution_id, public_url,
+                    provider_payment_id, provider_status, failure_reason, created_at,
+                    updated_at, confirmed_at, waggle_node_id
+                ) VALUES (
+                    :id, :provider, :execution_type, :recovery_episode_id, :failure_id,
+                    :decision_id, :attempt_id, :merchant_id, :customer_id, :amount,
+                    :currency, :status, :provider_execution_id, :public_url,
+                    :provider_payment_id, :provider_status, :failure_reason, :created_at,
+                    :updated_at, :confirmed_at, :waggle_node_id
+                )
+                """,
+                execution,
+            )
+            conn.commit()
+            return execution
+
+    def update_execution(self, execution: dict[str, Any]) -> None:
+        self.execute_write(
+            """
+            UPDATE recovery_executions SET
+                provider=?, status=?, provider_execution_id=?, public_url=?,
+                provider_payment_id=?, provider_status=?, failure_reason=?,
+                updated_at=?, confirmed_at=?, waggle_node_id=?
+            WHERE id=?
+            """,
+            (
+                execution["provider"], execution["status"], execution.get("provider_execution_id"),
+                execution.get("public_url"), execution.get("provider_payment_id"),
+                execution.get("provider_status"), execution.get("failure_reason", ""),
+                execution["updated_at"], execution.get("confirmed_at"), execution.get("waggle_node_id"),
+                execution["id"],
+            ),
+        )
+
+    def get_execution_for_episode(self, recovery_episode_id: str) -> dict[str, Any] | None:
+        row = self.execute_one(
+            "SELECT * FROM recovery_executions WHERE recovery_episode_id=? ORDER BY created_at LIMIT 1",
+            (recovery_episode_id,),
+        )
+        return dict(row) if row else None
+
+    def get_execution_for_decision(self, decision_id: str) -> dict[str, Any] | None:
+        row = self.execute_one("SELECT * FROM recovery_executions WHERE decision_id=?", (decision_id,))
+        return dict(row) if row else None
+
+    def get_execution_for_confirmation(
+        self, *, execution_id: str = "", provider_execution_id: str = ""
+    ) -> dict[str, Any] | None:
+        if execution_id:
+            row = self.execute_one("SELECT * FROM recovery_executions WHERE id=?", (execution_id,))
+        elif provider_execution_id:
+            row = self.execute_one(
+                "SELECT * FROM recovery_executions WHERE provider_execution_id=?", (provider_execution_id,)
+            )
+        else:
+            return None
+        return dict(row) if row else None
+
+    def confirm_execution(self, execution_id: str, payment_id: str, amount: int, confirmed_at: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE recovery_executions
+                SET status='SUCCESS', provider_status='paid', provider_payment_id=?,
+                    confirmed_at=?, updated_at=?
+                WHERE id=? AND status='PENDING' AND amount=?
+                """,
+                (payment_id, confirmed_at, confirmed_at, execution_id, amount),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+
+    def get_execution_confirmation_context(self, execution_id: str) -> dict[str, Any] | None:
+        row = self.execute_one(
+            """
+            SELECT re.*, ra.action_type, ra.recommended_method, ra.recommended_route,
+                   ra.retry_after_seconds, ra.executed_at, ra.outcome AS attempt_outcome,
+                   pf.method AS failure_method, pf.instrument_id AS failure_instrument_id,
+                   pf.failure_code, pf.waggle_node_id AS failure_waggle_node_id,
+                   rd.waggle_node_id AS decision_waggle_node_id
+            FROM recovery_executions re
+            JOIN recovery_attempts ra ON ra.id=re.attempt_id
+            JOIN payment_failures pf ON pf.id=re.failure_id
+            JOIN recovery_decisions rd ON rd.id=re.decision_id
+            WHERE re.id=?
+            """,
+            (execution_id,),
+        )
+        return dict(row) if row else None
+
+    def upsert_batch(self, batch: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recovery_batches (id, merchant_id, case_count, status, created_at, completed_at)
+                VALUES (:id, :merchant_id, :case_count, :status, :created_at, :completed_at)
+                ON CONFLICT(id) DO UPDATE SET status=excluded.status, completed_at=excluded.completed_at
+                """,
+                batch,
+            )
+            conn.commit()
+
+    def insert_batch_case(self, case: dict[str, Any]) -> None:
+        values = dict(case)
+        for field in ("policy_blocked", "unsafe_action", "policy_violation"):
+            values[field] = int(bool(values[field]))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO batch_recovery_cases (
+                    id, batch_id, failure_id, recovery_episode_id, amount, action,
+                    outcome, risk_score, risk_band, stale_evidence_rejected,
+                    policy_blocked, unsafe_action, policy_violation, created_at
+                ) VALUES (
+                    :id, :batch_id, :failure_id, :recovery_episode_id, :amount, :action,
+                    :outcome, :risk_score, :risk_band, :stale_evidence_rejected,
+                    :policy_blocked, :unsafe_action, :policy_violation, :created_at
+                )
+                """,
+                values,
+            )
+            conn.commit()
+
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        batch = self.execute_one("SELECT * FROM recovery_batches WHERE id=?", (batch_id,))
+        if not batch:
+            return None
+        cases = [dict(row) for row in self.execute(
+            """
+            SELECT bc.*, pf.customer_id, pf.method, pf.failure_code,
+                   rd.recommended_method, rd.retry_after_seconds, rd.human_review_required,
+                   re.status AS execution_status, re.provider AS execution_provider
+            FROM batch_recovery_cases bc
+            JOIN payment_failures pf ON pf.id=bc.failure_id
+            LEFT JOIN recovery_decisions rd ON rd.failure_id=bc.failure_id
+            LEFT JOIN recovery_executions re ON re.recovery_episode_id=bc.recovery_episode_id
+            WHERE bc.batch_id=? ORDER BY bc.created_at
+            """,
+            (batch_id,),
+        )]
+        actions = {name: sum(1 for row in cases if row["action"] == name) for name in (
+            "RETRY_AFTER", "SUGGEST_METHOD", "CUSTOMER_NUDGE", "STOP", "ESCALATE"
+        )}
+        return {
+            **dict(batch),
+            "total_gmv_at_risk": sum(row["amount"] for row in cases),
+            "simulated_recovered_gmv": sum(row["amount"] for row in cases if row["outcome"] == "SUCCESS"),
+            "pending_test_mode_gmv": sum(row["amount"] for row in cases if row.get("execution_status") == "PENDING"),
+            "confirmed_test_mode_recovered_gmv": sum(row["amount"] for row in cases if row.get("execution_status") == "SUCCESS"),
+            "stopped_gmv": sum(row["amount"] for row in cases if row["action"] == "STOP"),
+            "human_review_gmv": sum(row["amount"] for row in cases if row["action"] == "ESCALATE"),
+            "retry_after_count": actions["RETRY_AFTER"],
+            "suggest_method_count": actions["SUGGEST_METHOD"],
+            "customer_nudge_count": actions["CUSTOMER_NUDGE"],
+            "stop_count": actions["STOP"],
+            "escalation_count": actions["ESCALATE"],
+            "stale_memories_rejected": sum(row["stale_evidence_rejected"] for row in cases),
+            "policy_blocks": sum(row["policy_blocked"] for row in cases),
+            "unsafe_action_count": sum(row["unsafe_action"] for row in cases),
+            "policy_violation_count": sum(row["policy_violation"] for row in cases),
+            "cases": cases,
+        }
 
     def get_escalations(self, state: str | None = None) -> list[dict[str, Any]]:
         if state:
@@ -692,13 +958,22 @@ class Database:
                    rd.uncertainty_reason, rd.abstention_reason,
                    rd.risk_score, rd.risk_band, rd.risk_factors_json,
                    rd.reason, rd.status as decision_status,
+                   rd.execution_mode,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    rd.policy_result, rd.human_review_required, rd.escalation_reason,
                    rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
-                   ra.outcome, ra.recovered_amount, ra.executed_at as attempt_at, rd.id as decision_id
+                   ra.outcome, ra.recovered_amount, ra.executed_at as attempt_at, rd.id as decision_id,
+                   re.id as execution_id, re.provider as execution_provider,
+                   re.provider_execution_id, re.public_url as execution_public_url,
+                   re.status as execution_status, re.provider_payment_id,
+                   re.confirmed_at as execution_confirmed_at,
+                   er.external_workflow_provider, er.external_workflow_id,
+                   er.external_workflow_status, er.external_workflow_created_at
             FROM payment_failures pf
             LEFT JOIN recovery_decisions rd ON rd.failure_id = pf.id
             LEFT JOIN recovery_attempts ra ON ra.failure_id = pf.id
+            LEFT JOIN recovery_executions re ON re.recovery_episode_id = pf.recovery_episode_id
+            LEFT JOIN escalation_records er ON er.recovery_episode_id = pf.recovery_episode_id
             ORDER BY pf.occurred_at DESC
             LIMIT ?
             """,
@@ -714,13 +989,22 @@ class Database:
                    rd.uncertainty_reason, rd.abstention_reason,
                    rd.risk_score, rd.risk_band, rd.risk_factors_json,
                    rd.reason, rd.status as decision_status,
+                   rd.execution_mode,
                    rd.explanation, rd.memory_contribution, rd.evidence_json, rd.discarded_json,
                    rd.policy_result, rd.human_review_required, rd.escalation_reason,
                    rd.attempt_count, rd.max_automated_attempts, rd.last_safe_action,
-                   ra.outcome, ra.recovered_amount, rd.id as decision_id
+                   ra.outcome, ra.recovered_amount, rd.id as decision_id,
+                   re.id as execution_id, re.provider as execution_provider,
+                   re.provider_execution_id, re.public_url as execution_public_url,
+                   re.status as execution_status, re.provider_payment_id,
+                   re.confirmed_at as execution_confirmed_at,
+                   er.external_workflow_provider, er.external_workflow_id,
+                   er.external_workflow_status, er.external_workflow_created_at
             FROM payment_failures pf
             LEFT JOIN recovery_decisions rd ON rd.failure_id = pf.id
             LEFT JOIN recovery_attempts ra ON ra.failure_id = pf.id
+            LEFT JOIN recovery_executions re ON re.recovery_episode_id = pf.recovery_episode_id
+            LEFT JOIN escalation_records er ON er.recovery_episode_id = pf.recovery_episode_id
             WHERE pf.id = ?
             """,
             (failure_id,),
@@ -731,7 +1015,12 @@ class Database:
         total_failures = self.execute_one("SELECT COUNT(*) as cnt FROM payment_failures")
         total_amount_at_risk = self.execute_one("SELECT COALESCE(SUM(amount), 0) as total FROM payment_failures")
         recovered = self.execute_one(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(recovered_amount), 0) as total FROM recovery_attempts WHERE outcome = 'SUCCESS'"
+            """
+            SELECT COUNT(*) as cnt, COALESCE(SUM(ra.recovered_amount), 0) as total
+            FROM recovery_attempts ra
+            JOIN recovery_decisions rd ON rd.id=ra.decision_id
+            WHERE ra.outcome='SUCCESS' AND rd.execution_mode='simulation'
+            """
         )
         stale_prevented = self.execute_one(
             "SELECT COUNT(*) as cnt FROM recovery_decisions WHERE discarded_json != '[]'"
@@ -756,6 +1045,12 @@ class Database:
         latency = self.execute_one(
             "SELECT COALESCE(AVG(decision_latency_ms), 0) as avg FROM recovery_decisions"
         )
+        test_pending = self.execute_one(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS total FROM recovery_executions WHERE provider='razorpay_test' AND status='PENDING'"
+        )
+        provider_confirmed = self.execute_one(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS total FROM recovery_executions WHERE provider='razorpay_test' AND status='SUCCESS'"
+        )
 
         total_fail = total_failures["cnt"] if total_failures else 0
         amount_at_risk = total_amount_at_risk["total"] if total_amount_at_risk else 0
@@ -770,6 +1065,7 @@ class Database:
             "total_failures": total_fail,
             "gmv_at_risk": amount_at_risk,
             "recovered_gmv": rec_amount,
+            "recovered_gmv_label": "SIMULATED RECOVERY",
             "recovery_count": rec_count,
             "recovery_rate_pct": round(rate, 1),
             "stale_evidence_prevented": stale,
@@ -788,6 +1084,9 @@ class Database:
                 "escalations": escalations["cnt"] if escalations else 0,
                 "stopped_recoveries": stopped["cnt"] if stopped else 0,
                 "simulated_recovered_gmv": rec_amount,
+                "test_mode_pending_gmv": test_pending["total"] if test_pending else 0,
+                "provider_confirmed_recovered_gmv": provider_confirmed["total"] if provider_confirmed else 0,
+                "provider_confirmed_recovery_count": provider_confirmed["cnt"] if provider_confirmed else 0,
                 "stale_memories_rejected": stale,
                 "qwen_proposals_modified_by_policy": qwen_modified["cnt"] if qwen_modified else 0,
                 "qwen_proposals_blocked_by_policy": qwen_blocked["cnt"] if qwen_blocked else 0,
