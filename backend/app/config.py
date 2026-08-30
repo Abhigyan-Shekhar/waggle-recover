@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     app_name: str = "Waggle Recover"
     app_version: str = "0.1.0"
     debug: bool = False
+    protect_mutation_endpoints: bool = False
+    mutation_api_token: str = ""
 
     # Database
     app_db_path: str = "./data/waggle_recover.db"

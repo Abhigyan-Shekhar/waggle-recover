@@ -137,6 +137,7 @@ h1 em { color: #89948e; font-style: normal; font-weight: 520; }
   line-height: 1.65;
 }
 .hero-actions { display: flex; align-items: center; gap: 18px; margin-top: 34px; }
+.demo-feature-copy { max-width: 780px; margin: 14px 0 0; color: #819087; font-size: .72rem; line-height: 1.65; }
 .primary-action {
   display: inline-flex;
   align-items: center;

@@ -5,6 +5,7 @@ the recovery pipeline. Ensures System C actually uses memory, not just heuristic
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -34,6 +35,8 @@ def run_evaluation(
     settings: Settings | None = None,
     result_sink: Callable[[dict[str, Any]], None] | None = None,
     scenarios: list[EvalScenario] | None = None,
+    temporal_validation_enabled: bool = True,
+    cache_path: str | Path | None = None,
 ) -> ComparisonSummary:
     """
     Run full evaluation: load scenarios, populate Waggle memory, evaluate all three systems.
@@ -66,6 +69,7 @@ def run_evaluation(
         adapter=adapter,
         db=db,
         settings=settings,
+        temporal_validation_enabled=temporal_validation_enabled,
     )
 
     baseline_a = BlindFixedRetryBaseline()
@@ -95,11 +99,17 @@ def run_evaluation(
         # Step 1: Populate Waggle memory with scenario history
         _populate_memory(adapter, db, orchestrator, scenario)
 
+        # All systems receive the exact same episode-scoped attempt count.
+        # This prevents baselines from receiving a fresh budget when System C
+        # correctly sees historical attempts for the current episode.
+        benchmark_event = _event_for_scenario(scenario)
+        retry_count = db.get_attempt_count_for_episode(recovery_episode_for(benchmark_event).id)
+
         # Step 2: Evaluate Baseline A
-        _eval_baseline_a(scenario, baseline_a, metrics_a, result_sink)
+        _eval_baseline_a(scenario, baseline_a, metrics_a, result_sink, retry_count)
 
         # Step 3: Evaluate Baseline B
-        _eval_baseline_b(scenario, baseline_b, metrics_b, result_sink)
+        _eval_baseline_b(scenario, baseline_b, metrics_b, result_sink, retry_count)
 
         # Step 4: Evaluate System C (Waggle Recover)
         _eval_system_c(scenario, orchestrator, metrics_c, result_sink)
@@ -110,6 +120,14 @@ def run_evaluation(
         system_c=metrics_c,
         scenario_count=len(scenarios),
     )
+
+    if cache_path is not None:
+        destination = Path(cache_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(summary.to_dict(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     LOGGER.info("%s", summary.format_table())
     return summary
@@ -264,8 +282,8 @@ def _populate_memory(
                     amount=hist.amount,
                     method=hist.method,
                     instrument_id=hist.instrument_id,
-                    failure_code=scenario.failure_code,
-                    failure_reason="Historical recovery context",
+                    failure_code="",
+                    failure_reason="Unknown historical failure context",
                     occurred_at=hist.timestamp,
                     recovery_episode_id=episode.id,
                 )
@@ -309,9 +327,10 @@ def _eval_baseline_a(
     baseline: BlindFixedRetryBaseline,
     metrics: SystemMetrics,
     result_sink: Callable[[dict[str, Any]], None] | None = None,
+    retry_count: int = 0,
 ) -> None:
     start = time.time()
-    decision = baseline.decide(scenario)
+    decision = baseline.decide(scenario, retry_count=retry_count)
     latency_ms = (time.time() - start) * 1000
 
     _update_metrics(scenario, decision.action.value, decision, metrics, latency_ms)
@@ -324,9 +343,10 @@ def _eval_baseline_b(
     baseline: ContextualHistoryBaseline,
     metrics: SystemMetrics,
     result_sink: Callable[[dict[str, Any]], None] | None = None,
+    retry_count: int = 0,
 ) -> None:
     start = time.time()
-    decision = baseline.decide(scenario)
+    decision = baseline.decide(scenario, retry_count=retry_count)
     latency_ms = (time.time() - start) * 1000
 
     _update_metrics(scenario, decision.action.value, decision, metrics, latency_ms)
@@ -340,18 +360,7 @@ def _eval_system_c(
     metrics: SystemMetrics,
     result_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
-    event = NormalizedPaymentEvent(
-        event_type="payment.failed",
-        payment_id=scenario.current_payment_id or f"eval_{scenario.id}_current",
-        customer_id=scenario.customer_id,
-        merchant_id=scenario.merchant_id,
-        amount=scenario.amount,
-        method=scenario.method,
-        instrument_id=scenario.instrument_id,
-        error_code=scenario.failure_code,
-        error_description=scenario.failure_reason,
-        created_at=datetime.now(UTC),
-    )
+    event = _event_for_scenario(scenario)
 
     start = time.time()
     result = orchestrator.process_event(
@@ -373,6 +382,22 @@ def _eval_system_c(
     _update_metrics_dict(scenario, action, decision, outcome, eval_metrics, metrics, latency_ms)
     _emit_result(result_sink, scenario, "system_c", decision, outcome.get("outcome", "FAILURE"),
                  latency_ms, eval_metrics, outcome.get("recovered_amount", 0))
+
+
+def _event_for_scenario(scenario: EvalScenario) -> NormalizedPaymentEvent:
+    """Build the single canonical current event shared by fairness checks and System C."""
+    return NormalizedPaymentEvent(
+        event_type="payment.failed",
+        payment_id=scenario.current_payment_id or f"eval_{scenario.id}_current",
+        customer_id=scenario.customer_id,
+        merchant_id=scenario.merchant_id,
+        amount=scenario.amount,
+        method=scenario.method,
+        instrument_id=scenario.instrument_id,
+        error_code=scenario.failure_code,
+        error_description=scenario.failure_reason,
+        created_at=datetime.now(UTC),
+    )
 
 
 def _emit_result(

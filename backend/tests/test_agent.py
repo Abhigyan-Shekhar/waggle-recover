@@ -131,13 +131,16 @@ def test_agent_receives_only_accepted_evidence_as_usable_memory(evidence_bundle)
     context = client.contexts[0]
     assert context["trusted_historical_evidence"][0]["evidence_id"] == "accepted-1"
     assert context["trusted_historical_evidence"][0]["usable_as_evidence"] is True
-    assert context["rejected_memory_for_transparency_only"][0]["evidence_id"] == "rejected-old-card"
-    assert context["rejected_memory_for_transparency_only"][0]["usable_as_evidence"] is False
+    assert context["rejected_memory_summary"] == {"count": 1, "categories": ["SUPERSEDED"]}
+    assert "rejected_memory_for_transparency_only" not in context
+    assert "rejected-old-card" not in json.dumps(context)
+    assert "card_old" not in json.dumps(context)
+    assert all(item.get("retry_after_seconds") != 600 for item in context["trusted_historical_evidence"])
     assert context["safe_alternative_methods"][0] == "upi"
     assert "card" not in context["safe_alternative_methods"]
     assert context["authoritative_strategy_priors"][0]["posterior_success_probability"] == 0.74
     assert "rejected-old-card" not in context["authoritative_strategy_priors"][0]["authoritative_evidence_ids"]
-    assert "never cite" in client.system_prompts[0].lower()
+    assert "not evidence" in client.system_prompts[0].lower()
     assert "prefer suggest_method" in client.system_prompts[0].lower()
     assert decision.evidence_references[0].waggle_node_id == "accepted-1"
     assert trace["agent_fallback"] is False
@@ -151,6 +154,25 @@ def test_agent_cannot_cite_rejected_evidence(evidence_bundle):
     assert trace["agent_fallback"] is True
     assert "Model cited rejected evidence" in trace["fallback_reason"]
     assert all(ref.waggle_node_id != "rejected-old-card" for ref in decision.evidence_references)
+
+
+def test_unknown_evidence_cannot_enter_qwen_context_even_if_bundle_is_malformed(evidence_bundle):
+    unknown = evidence_bundle.accepted_evidence[0].model_copy(update={
+        "waggle_node_id": "unknown-1",
+        "temporal_status": TemporalStatus.UNKNOWN,
+    })
+    malformed = evidence_bundle.model_copy(update={
+        "accepted_evidence": [unknown],
+        "discarded_evidence": [],
+    })
+    client = FakeModelClient(candidate(evidence_ids=["unknown-1"]))
+
+    decision, trace = AgentDecisionProvider(model="test-qwen", model_client=client).decide_with_trace(malformed)
+
+    assert client.contexts[0]["trusted_historical_evidence"] == []
+    assert trace["agent_fallback"] is True
+    assert "rejected evidence" in trace["fallback_reason"].lower()
+    assert decision.evidence_references == []
 
 
 def test_agent_normalizes_parameters_irrelevant_to_selected_action(evidence_bundle):
@@ -310,7 +332,8 @@ def test_stale_card_trap_agent_cannot_use_old_timing(orchestrator_setup):
     assert result["agent_trace"]["rejected_evidence_ids"]
     assert result["agent_trace"]["cited_evidence_ids"] == []
     assert client.contexts[0]["trusted_historical_evidence"] == []
-    assert client.contexts[0]["rejected_memory_for_transparency_only"]
+    assert client.contexts[0]["rejected_memory_summary"]["count"] > 0
+    assert "card_legacy" not in json.dumps(client.contexts[0])
 
 
 def test_timing_memory_agent_can_use_valid_interval(orchestrator_setup):

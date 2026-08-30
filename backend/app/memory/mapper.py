@@ -5,12 +5,9 @@ Domain semantics are encoded via tags and metadata.
 """
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from typing import Any
 
-from waggle.models import NodeType, RelationType
-
+from waggle.models import NodeType
 
 # ── Node content templates ──────────────────────────────────────────────────
 

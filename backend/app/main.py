@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
@@ -105,13 +104,13 @@ def create_app() -> FastAPI:
     )
 
     # Register routers
-    from app.api.payments import router as payments_router
-    from app.api.webhooks import router as webhooks_router
     from app.api.decisions import router as decisions_router
-    from app.api.simulator import router as simulator_router
     from app.api.evaluation import router as evaluation_router
-    from app.api.memory_graph import router as memory_graph_router
     from app.api.mandate import router as mandate_router
+    from app.api.memory_graph import router as memory_graph_router
+    from app.api.payments import router as payments_router
+    from app.api.simulator import router as simulator_router
+    from app.api.webhooks import router as webhooks_router
 
     app.include_router(payments_router, prefix="/api/payments", tags=["payments"])
     app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])

@@ -1,4 +1,5 @@
 {
+  "ablation_control": "Identical scenarios, Waggle retrieval, scoring, ranking, decision engine, policy, and retry budgets; only temporal validation is switched OFF versus ON.",
   "evaluation": "Temporal Authority Ablation",
   "finding": "Retrieval provides context; temporal validation prevents superseded evidence from driving actions.",
   "mode": "deterministic_evaluation",
@@ -26,8 +27,8 @@
       "unsafe_action_rate": 0.005
     },
     "waggle_with_temporal_validation": {
-      "action_accuracy": 1.0,
-      "average_latency_ms": 6.4,
+      "action_accuracy": 0.94,
+      "average_latency_ms": 6.52,
       "name": "Waggle Recover WITH temporal validation",
       "scenario_count": 200,
       "simulated_gmv_recovery": 0.8692,
@@ -36,9 +37,9 @@
       "unsafe_action_rate": 0.0
     },
     "waggle_without_temporal_validation": {
-      "action_accuracy": 0.76,
-      "average_latency_ms": 0.0,
-      "name": "Waggle retrieval WITHOUT temporal validation",
+      "action_accuracy": 0.83,
+      "average_latency_ms": 6.34,
+      "name": "Waggle Recover WITHOUT temporal validation",
       "scenario_count": 200,
       "simulated_gmv_recovery": 0.7692,
       "stale_evidence_rejection_rate": 0.0,

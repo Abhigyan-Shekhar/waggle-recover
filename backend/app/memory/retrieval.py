@@ -38,11 +38,41 @@ class EvidenceRetriever:
         supersession_validator: SupersessionValidator,
         lookup_confidence_threshold: float = 0.75,
         max_evidence_nodes: int = 20,
+        temporal_validation_enabled: bool = True,
     ) -> None:
         self.adapter = adapter
         self.validator = supersession_validator
         self.lookup_confidence_threshold = lookup_confidence_threshold
         self.max_evidence_nodes = max_evidence_nodes
+        self.temporal_validation_enabled = temporal_validation_enabled
+
+    def _validate(
+        self,
+        evidence_refs: list[EvidenceReference],
+        *,
+        current_instrument_alias: str,
+        customer_id: str,
+    ):
+        """Use one retrieval pipeline with a switchable authority boundary.
+
+        Disabling validation exists only for the controlled ablation. It keeps
+        retrieval, scoring, ranking, and decision logic identical while
+        deliberately trusting every retrieved node.
+        """
+        if self.temporal_validation_enabled:
+            return self.validator.validate_evidence_bundle(
+                evidence_refs=evidence_refs,
+                current_instrument_alias=current_instrument_alias,
+                customer_id=customer_id,
+            )
+
+        from app.memory.supersession import SupersessionSummary
+
+        for ref in evidence_refs:
+            ref.temporal_status = TemporalStatus.CURRENT
+            ref.accepted = True
+            ref.rejection_reason = ""
+        return SupersessionSummary(accepted=evidence_refs)
 
     def retrieve(
         self,
@@ -115,8 +145,8 @@ class EvidenceRetriever:
             },
         )
 
-        validation = self.validator.validate_evidence_bundle(
-            evidence_refs=[ref],
+        validation = self._validate(
+            [ref],
             current_instrument_alias=current_instrument_alias,
             customer_id=failure.customer_id,
         )
@@ -196,8 +226,8 @@ class EvidenceRetriever:
             evidence_refs.append(ref)
 
         # Apply supersession validation
-        validation = self.validator.validate_evidence_bundle(
-            evidence_refs=evidence_refs,
+        validation = self._validate(
+            evidence_refs,
             current_instrument_alias=current_instrument_alias,
             customer_id=failure.customer_id,
         )

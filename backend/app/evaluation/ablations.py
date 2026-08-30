@@ -3,61 +3,13 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.domain.enums import MemoryContribution, RecoveryAction
-from app.domain.models import RecoveryDecision
 from app.evaluation.generator import EvalScenario, ScenarioGenerator
-from app.evaluation.runner import _decision_is_correct, _outcome_for_decision, run_evaluation
-
-
-class WaggleRetrievalWithoutTemporalValidation:
-    """Parameter-aware history retrieval that deliberately trusts stale nodes.
-
-    This is not a product mode. It is the critical ablation: keep useful
-    retrieval semantics while removing authority/supersession validation.
-    """
-
-    name = "Waggle retrieval WITHOUT temporal validation"
-
-    def decide_with_audit(self, scenario: EvalScenario) -> tuple[RecoveryDecision, bool]:
-        successful = sorted(
-            [item for item in scenario.history if item.outcome == "SUCCESS"],
-            key=lambda item: item.timestamp,
-            reverse=True,
-        )
-        timing = next(
-            (item for item in successful if item.action_taken == "RETRY_AFTER" and item.retry_after_seconds),
-            None,
-        )
-        if timing is not None:
-            return RecoveryDecision(
-                failure_id=scenario.id,
-                action=RecoveryAction.RETRY_AFTER,
-                retry_after_seconds=timing.retry_after_seconds,
-                recommended_method=scenario.method,
-                confidence=0.82,
-                reason="Retrieved the most relevant successful retry without temporal validation.",
-                memory_contribution=MemoryContribution.FULL_CONTEXT,
-            ), timing.instrument_id == scenario.stale_instrument
-
-        alternative = next((item for item in successful if item.method != scenario.method), None)
-        if alternative is not None:
-            return RecoveryDecision(
-                failure_id=scenario.id,
-                action=RecoveryAction.SUGGEST_METHOD,
-                recommended_method=alternative.method,
-                confidence=0.75,
-                reason="Retrieved successful alternative without temporal validation.",
-                memory_contribution=MemoryContribution.FULL_CONTEXT,
-            ), alternative.instrument_id == scenario.stale_instrument
-
-        from app.evaluation.baselines import ContextualHistoryBaseline
-        return ContextualHistoryBaseline().decide(scenario), False
+from app.evaluation.runner import run_evaluation
 
 
 @dataclass
@@ -114,7 +66,8 @@ def run_ablation_evaluation(
     *, seed: int = 42, scenario_count: int = 200, cache_path: str | Path | None = None
 ) -> dict[str, Any]:
     """Compare retrieval with and without temporal validation on identical cases."""
-    rows: list[dict[str, Any]] = []
+    validated_rows: list[dict[str, Any]] = []
+    unvalidated_rows: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="waggle-ablation-") as temp_dir:
         root = Path(temp_dir)
         settings = Settings(
@@ -128,7 +81,17 @@ def run_ablation_evaluation(
             db_path=str(root / "eval-app.db"),
             waggle_db_path=str(root / "eval-waggle.db"),
             settings=settings,
-            result_sink=rows.append,
+            result_sink=validated_rows.append,
+            temporal_validation_enabled=True,
+        )
+        run_evaluation(
+            seed=seed,
+            scenario_count=scenario_count,
+            db_path=str(root / "no-validator-app.db"),
+            waggle_db_path=str(root / "no-validator-waggle.db"),
+            settings=settings,
+            result_sink=unvalidated_rows.append,
+            temporal_validation_enabled=False,
         )
 
     scenarios = {item.id: item for item in ScenarioGenerator(seed=seed).generate(scenario_count)}
@@ -139,7 +102,7 @@ def run_ablation_evaluation(
     }
     counts = {key: _Counts() for key in (*names, "waggle_no_temporal")}
 
-    for row in rows:
+    for row in validated_rows:
         scenario = scenarios[row["scenario_id"]]
         system = row["system"]
         item = counts[system]
@@ -156,28 +119,27 @@ def run_ablation_evaluation(
         item.unsafe += int(_is_inherently_unsafe(scenario, decision, used_stale))
         item.latency_ms += float(row["latency_ms"])
 
-    no_temporal = WaggleRetrievalWithoutTemporalValidation()
-    for scenario in scenarios.values():
-        started = time.perf_counter()
-        decision, used_stale = no_temporal.decide_with_audit(scenario)
-        latency = (time.perf_counter() - started) * 1000
-        decision_dict = decision.model_dump(mode="json")
-        outcome = _outcome_for_decision(scenario, decision.action.value, decision)
+    for row in unvalidated_rows:
+        if row["system"] != "system_c":
+            continue
+        scenario = scenarios[row["scenario_id"]]
+        decision = row["decision"]
+        used_stale = _baseline_used_stale(scenario, decision)
         item = counts["waggle_no_temporal"]
         item.total += 1
-        item.correct += int(_decision_is_correct(scenario, decision.action.value, decision, outcome))
-        item.recovered += scenario.amount if outcome == "SUCCESS" else 0
+        item.correct += int(row["action_correct"])
+        item.recovered += int(row["recovered_amount"])
         item.at_risk += scenario.amount
         item.stale_cases += int(scenario.has_stale_memory)
         item.stale_used += int(used_stale)
-        item.unsafe += int(_is_inherently_unsafe(scenario, decision_dict, used_stale))
-        item.latency_ms += latency
+        item.unsafe += int(_is_inherently_unsafe(scenario, decision, used_stale))
+        item.latency_ms += float(row["latency_ms"])
 
     systems = {
         "blind_retry": counts["baseline_a"].to_dict(names["baseline_a"]),
         "contextual_history": counts["baseline_b"].to_dict(names["baseline_b"]),
         "waggle_without_temporal_validation": counts["waggle_no_temporal"].to_dict(
-            no_temporal.name
+            "Waggle Recover WITHOUT temporal validation"
         ),
         "waggle_with_temporal_validation": counts["system_c"].to_dict(names["system_c"]),
     }
@@ -188,6 +150,10 @@ def run_ablation_evaluation(
         "scenario_count": scenario_count,
         "systems": systems,
         "finding": "Retrieval provides context; temporal validation prevents superseded evidence from driving actions.",
+        "ablation_control": (
+            "Identical scenarios, Waggle retrieval, scoring, ranking, decision engine, policy, and retry budgets; "
+            "only temporal validation is switched OFF versus ON."
+        ),
         "unsafe_action_definition": (
             "Use of known stale evidence, or retrying the same method for a permanent/instrument failure."
         ),

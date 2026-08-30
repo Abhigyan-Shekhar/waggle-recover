@@ -420,6 +420,25 @@ class Database:
         )
         return str(row["action_type"]) if row else None
 
+    def get_terminal_state_for_episode(self, recovery_episode_id: str) -> dict[str, Any] | None:
+        """Return the first persisted STOP/ESCALATE safety state for an episode."""
+        row = self.execute_one(
+            """
+            SELECT a.action_type, a.outcome, a.executed_at, a.decision_id,
+                   d.failure_id, d.reason, d.status, d.human_review_required,
+                   d.escalation_reason, d.attempt_count, d.max_automated_attempts,
+                   d.last_safe_action, d.policy_result
+            FROM recovery_attempts AS a
+            LEFT JOIN recovery_decisions AS d ON d.id = a.decision_id
+            WHERE a.recovery_episode_id = ?
+              AND a.action_type IN ('STOP', 'ESCALATE')
+            ORDER BY a.executed_at ASC
+            LIMIT 1
+            """,
+            (recovery_episode_id,),
+        )
+        return dict(row) if row else None
+
     def upsert_escalation(self, escalation: dict[str, Any]) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -452,6 +471,17 @@ class Database:
         else:
             rows = self.execute("SELECT * FROM escalation_records ORDER BY created_at DESC")
         return [dict(row) for row in rows]
+
+    def get_escalation_for_episode(self, recovery_episode_id: str) -> dict[str, Any] | None:
+        row = self.execute_one(
+            """
+            SELECT * FROM escalation_records
+            WHERE recovery_episode_id = ?
+            ORDER BY created_at ASC LIMIT 1
+            """,
+            (recovery_episode_id,),
+        )
+        return dict(row) if row else None
 
     def get_instruments_for_customer(self, customer_id: str) -> list[dict[str, Any]]:
         rows = self.execute(

@@ -144,13 +144,15 @@ After enforcing the intended precedence of exact authoritative timing memory ove
 
 This evaluator isolates per-merchant sequential memory but does not test global-to-merchant hierarchical transfer: each merchant starts with a fresh graph, so its cold-start global prior is neutral rather than learned from other merchants. The prototype also bounds the newest outcomes per action only after taking a graph snapshot, and payment-ID correlation is not yet a general order/subscription recovery-episode identity.
 
-The unchanged 200-case benchmark at seed 42 is summarized below:
+The corrected 200-case benchmark at seed 42 uses equivalent episode-scoped retry counts for all three systems and is summarized below:
 
 | System | Parameter-aware action accuracy | Recovery success | Simulated GMV recovery | Exact stale-evidence rejection |
 | --- | ---: | ---: | ---: | ---: |
-| Waggle Recover | **100%** | **87%** | **87.3%** | **100%** |
-| Contextual History | 76% | 76% | 77.3% | 0% |
-| Blind Fixed Retry | 43% | 43% | 48.2% | 0% |
+| Waggle Recover | **94%** | **87%** | **86.9%** | **100%** |
+| Contextual History | 76% | 76% | 76.9% | 0% |
+| Blind Fixed Retry | 43% | 43% | 48.0% | 0% |
+
+The remaining 6% error is concentrated in `failed_alternative` cases. The system safely avoids an unsafe action but escalates where the benchmark expects a different non-recovering action; this is measured as an unnecessary escalation rather than hidden by unequal retry budgets.
 
 ### Separate robustness evaluation
 
@@ -162,11 +164,11 @@ WAGGLE_EMBEDDING_MODEL=fake python -c \
   'from app.evaluation.robustness import run_robustness_evaluation; run_robustness_evaluation(cache_path="data/evaluations/robustness.json")'
 ```
 
-The verified System C result is **100% parameter-aware action accuracy**, **87% recovery success**, **87.38% simulated GMV recovery**, **100% stale rejection**, **0% unsafe-action rate**, **0% unnecessary-escalation rate**, and **0% policy-violation rate**. These are seeded simulator results, not production performance or production GMV.
+The verified System C result is **94% parameter-aware action accuracy**, **87% recovery success**, **87.38% simulated GMV recovery**, **100% stale rejection**, **0% unsafe-action rate**, **6% unnecessary-escalation rate**, and **0% policy-violation rate**. These are seeded simulator results, not production performance or production GMV.
 
 ### Temporal-authority ablation
 
-The controlled 200-case ablation compares blind retry, contextual history, Waggle-style retrieval without temporal validation, and full Waggle Recover. Retrieval without temporal validation scored **76% action accuracy**, **76.92% simulated GMV recovery**, and used known stale evidence on **4.55% of stale-memory cases**. Full Waggle Recover scored **100% action accuracy**, **86.92% simulated GMV recovery**, **0% stale use**, and **100% stale rejection**. This is the direct evidence for the novelty claim: context helps, but retrieval alone is not enough; authority validation supplies the safety improvement.
+The controlled 200-case ablation now runs the same Waggle retrieval, scoring, ranking, decision, policy, and retry-budget pipeline twice; only temporal validation is switched OFF versus ON. With validation OFF it scored **83% action accuracy**, **76.92% simulated GMV recovery**, and used known stale evidence on **4.55% of stale-memory cases**. With validation ON it scored **94% action accuracy**, **86.92% simulated GMV recovery**, **0% stale use**, and **100% stale rejection**. This isolates the safety and accuracy contribution of temporal authority validation.
 
 ```bash
 cd backend
@@ -178,7 +180,9 @@ WAGGLE_EMBEDDING_MODEL=fake python -c \
 
 `app.evaluation.qwen` evaluates the Qwen candidate and the final post-policy action separately. It reports structured-output validity, candidate and final accuracy, rejected/stale citations, unknown evidence, policy modifications/blocks, safe escalation, fallback, latency, and token usage when available. Concise structured rows can be cached; prompts and chain-of-thought are never persisted.
 
-This Qwen benchmark has **not been run for the checked-in result set**, because no runtime Groq credential was configured during verification. The dashboard therefore says “not run” instead of presenting deterministic fallbacks as Qwen results.
+The frozen live run used seed `31415`, 50 cases, temperature `0`, and `qwen/qwen3.8-27b`. It produced **100% valid structured output**, **52% candidate action accuracy**, and **60% final post-policy action accuracy**. There were **0 fallbacks**, **0 hallucinated evidence citations**, **0 stale-evidence citations across 5 stale-memory cases**, and **0 uses of rejected memory**. Policy blocked and safely escalated 4/50 cases (8%). Mean model latency was **5,964.36 ms**. These are live-model benchmark results on seeded simulated payment scenarios, not production recovery performance.
+
+The structured report is cached at `backend/data/evaluations/qwen.json`. It contains concise candidate/final rows and aggregate metrics only; the API key, prompts, trusted context, rejected contents, and chain-of-thought are not persisted.
 
 ### Recovery episodes, escalation, and risk priority
 
@@ -191,18 +195,21 @@ An explainable 0–100 risk score uses payment value, attempt count, failure cla
 - Payment instrument aliases only: no PAN, CVV, banking credentials, or secrets.
 - The allowed action set is closed: `RETRY_NOW`, `RETRY_AFTER`, `SUGGEST_METHOD`, `CUSTOMER_NUDGE`, `WAIT_NEXT_CYCLE`, `ESCALATE`, and `STOP`.
 - A policy layer can allow, modify, or block a candidate decision.
-- Qwen sees accepted evidence as usable memory; rejected memory is labeled forbidden and every cited evidence ID is validated deterministically.
+- Only evidence proven `CURRENT` enters trusted memory; `UNKNOWN`, stale, superseded, and conflicting evidence fail closed into the audit trail.
+- Qwen receives accepted evidence plus only the rejected count and rejection categories. Rejected IDs, labels, actions, outcomes, instruments, timing, and reasons remain audit-only.
 - Agent traces contain structured summaries and latency only—never raw prompts, secrets, or hidden chain-of-thought.
 - Razorpay webhook signatures are verified whenever Test Mode is enabled; webhook processing is idempotent per event/payment pair.
 - Provider event IDs, duplicate protection, replay-window checks, clean malformed-payload responses, and test/simulation indicators are explicit. Real `payment.failed` events remain `PENDING`; only `payment.captured` can persist confirmed recovered money.
 - Merchant policy versions form `new --updates--> old` chains. Superseded policies remain queryable for audit but are excluded from current authority.
 - The subscription/mandate path is advisory only. It reuses recovery memory and policy but does not alter NPCI or bank retry schedules.
+- `STOP` and `ESCALATE` are irreversible per recovery episode. Replayed events cannot restart retrieval, model reasoning, execution, or money movement.
+- Public deployments can set `PROTECT_MUTATION_ENDPOINTS=true` and `MUTATION_API_TOKEN` to require `X-Waggle-Admin-Token` on reset and evaluation mutation endpoints.
 
 ## Limitations
 
 - All benchmark GMV and recovery outcomes are simulated.
 - The deterministic 200-case and 1,000-case benchmarks do not evaluate Qwen.
-- The separate Qwen evaluation runner exists and is tested with an injected model client, but no live Qwen benchmark result is claimed here.
+- The separate live Qwen evaluation covers 50 frozen seeded cases; it is too small to establish production model quality or recovery uplift.
 - Real money movement is intentionally not automated in this prototype. A failure produces a recommendation and `PENDING`; confirmed recovery requires a capture webhook.
 - Production performance, reliability, and recovery uplift have not been established.
 - Adaptive merchant priors are advisory and did not demonstrate the preregistered sequential uplift after exact authoritative timing evidence was restored to its correct precedence.

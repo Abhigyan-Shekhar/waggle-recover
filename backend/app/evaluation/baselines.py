@@ -7,11 +7,9 @@ System C: Waggle Recover (full temporal graph + supersession)
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
 
-from app.domain.enums import FailureClass, MemoryContribution, RecoveryAction
-from app.domain.models import MerchantPolicy, RecoveryDecision
+from app.domain.enums import MemoryContribution, RecoveryAction
+from app.domain.models import RecoveryDecision
 from app.evaluation.generator import EvalScenario
 
 LOGGER = logging.getLogger(__name__)

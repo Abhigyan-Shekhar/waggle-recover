@@ -1,0 +1,266 @@
+{
+  "improvements": {
+    "c_vs_a_accuracy": 0.51,
+    "c_vs_a_gmv_recovery": 0.3896,
+    "c_vs_b_accuracy": 0.18,
+    "c_vs_b_gmv_recovery": 0.1,
+    "stale_rejection_improvement_vs_b": 1.0
+  },
+  "legend": {
+    "baseline_a": "Blind Fixed Retry \u2014 always retries same method after fixed delay",
+    "baseline_b": "Contextual History \u2014 uses history, no supersession validation",
+    "system_c": "Waggle Recover \u2014 temporal memory graph with supersession validation"
+  },
+  "scenario_count": 200,
+  "systems": {
+    "baseline_a": {
+      "action_accuracy": 0.43,
+      "action_accuracy_pct": 43.0,
+      "avg_latency_ms": 0.01,
+      "category_results": {
+        "conflicting_history": {
+          "correct": 8,
+          "success": 8,
+          "total": 8
+        },
+        "customer_specific": {
+          "correct": 17,
+          "success": 17,
+          "total": 17
+        },
+        "expired_instrument": {
+          "correct": 0,
+          "success": 0,
+          "total": 17
+        },
+        "failed_alternative": {
+          "correct": 0,
+          "success": 0,
+          "total": 12
+        },
+        "insufficient_balance": {
+          "correct": 0,
+          "success": 0,
+          "total": 13
+        },
+        "merchant_specific": {
+          "correct": 0,
+          "success": 0,
+          "total": 18
+        },
+        "method_replacement": {
+          "correct": 0,
+          "success": 0,
+          "total": 22
+        },
+        "no_history_control": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "retry_limit_exhaustion": {
+          "correct": 0,
+          "success": 0,
+          "total": 14
+        },
+        "route_degradation": {
+          "correct": 13,
+          "success": 13,
+          "total": 13
+        },
+        "successful_alternative": {
+          "correct": 0,
+          "success": 0,
+          "total": 18
+        },
+        "transient_issuer": {
+          "correct": 30,
+          "success": 30,
+          "total": 30
+        }
+      },
+      "evidence_accepted_total": 0,
+      "evidence_discarded_total": 0,
+      "memory_contribution_count": 0,
+      "name": "Baseline A: Blind Fixed Retry",
+      "p95_latency_ms": 0.02,
+      "recovery_rate_gmv": 0.4796,
+      "recovery_rate_gmv_pct": 48.0,
+      "scenario_count": 200,
+      "stale_evidence_correctly_rejected": 0,
+      "stale_evidence_detected": 22,
+      "stale_rejection_rate": 0.0,
+      "stale_rejection_rate_pct": 0.0,
+      "success_rate": 0.43,
+      "success_rate_pct": 43.0,
+      "total_amount_at_risk": 164000000,
+      "total_recovered_amount": 78650000
+    },
+    "baseline_b": {
+      "action_accuracy": 0.76,
+      "action_accuracy_pct": 76.0,
+      "avg_latency_ms": 0.01,
+      "category_results": {
+        "conflicting_history": {
+          "correct": 8,
+          "success": 8,
+          "total": 8
+        },
+        "customer_specific": {
+          "correct": 17,
+          "success": 17,
+          "total": 17
+        },
+        "expired_instrument": {
+          "correct": 17,
+          "success": 17,
+          "total": 17
+        },
+        "failed_alternative": {
+          "correct": 0,
+          "success": 0,
+          "total": 12
+        },
+        "insufficient_balance": {
+          "correct": 13,
+          "success": 13,
+          "total": 13
+        },
+        "merchant_specific": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "method_replacement": {
+          "correct": 0,
+          "success": 0,
+          "total": 22
+        },
+        "no_history_control": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "retry_limit_exhaustion": {
+          "correct": 0,
+          "success": 0,
+          "total": 14
+        },
+        "route_degradation": {
+          "correct": 13,
+          "success": 13,
+          "total": 13
+        },
+        "successful_alternative": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "transient_issuer": {
+          "correct": 30,
+          "success": 30,
+          "total": 30
+        }
+      },
+      "evidence_accepted_total": 0,
+      "evidence_discarded_total": 0,
+      "memory_contribution_count": 0,
+      "name": "Baseline B: Contextual History",
+      "p95_latency_ms": 0.01,
+      "recovery_rate_gmv": 0.7692,
+      "recovery_rate_gmv_pct": 76.9,
+      "scenario_count": 200,
+      "stale_evidence_correctly_rejected": 0,
+      "stale_evidence_detected": 22,
+      "stale_rejection_rate": 0.0,
+      "stale_rejection_rate_pct": 0.0,
+      "success_rate": 0.76,
+      "success_rate_pct": 76.0,
+      "total_amount_at_risk": 164000000,
+      "total_recovered_amount": 126150000
+    },
+    "system_c": {
+      "action_accuracy": 0.94,
+      "action_accuracy_pct": 94.0,
+      "avg_latency_ms": 26.21,
+      "category_results": {
+        "conflicting_history": {
+          "correct": 8,
+          "success": 8,
+          "total": 8
+        },
+        "customer_specific": {
+          "correct": 17,
+          "success": 17,
+          "total": 17
+        },
+        "expired_instrument": {
+          "correct": 17,
+          "success": 17,
+          "total": 17
+        },
+        "failed_alternative": {
+          "correct": 0,
+          "success": 0,
+          "total": 12
+        },
+        "insufficient_balance": {
+          "correct": 13,
+          "success": 13,
+          "total": 13
+        },
+        "merchant_specific": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "method_replacement": {
+          "correct": 22,
+          "success": 22,
+          "total": 22
+        },
+        "no_history_control": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "retry_limit_exhaustion": {
+          "correct": 14,
+          "success": 0,
+          "total": 14
+        },
+        "route_degradation": {
+          "correct": 13,
+          "success": 13,
+          "total": 13
+        },
+        "successful_alternative": {
+          "correct": 18,
+          "success": 18,
+          "total": 18
+        },
+        "transient_issuer": {
+          "correct": 30,
+          "success": 30,
+          "total": 30
+        }
+      },
+      "evidence_accepted_total": 223,
+      "evidence_discarded_total": 23,
+      "memory_contribution_count": 105,
+      "name": "System C: Waggle Recover",
+      "p95_latency_ms": 35.27,
+      "recovery_rate_gmv": 0.8692,
+      "recovery_rate_gmv_pct": 86.9,
+      "scenario_count": 200,
+      "stale_evidence_correctly_rejected": 22,
+      "stale_evidence_detected": 22,
+      "stale_rejection_rate": 1.0,
+      "stale_rejection_rate_pct": 100.0,
+      "success_rate": 0.87,
+      "success_rate_pct": 87.0,
+      "total_amount_at_risk": 164000000,
+      "total_recovered_amount": 142550000
+    }
+  }
+}

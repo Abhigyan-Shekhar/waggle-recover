@@ -79,7 +79,10 @@ class SupersessionValidator:
             )
             summary.supersession_results.append(result)
 
-            if result.temporal_status in (TemporalStatus.CURRENT, TemporalStatus.UNKNOWN):
+            # Fail closed: only evidence proven CURRENT may enter trusted
+            # decision memory. UNKNOWN remains available in the audit trail,
+            # but must never control an automated recovery action.
+            if result.temporal_status == TemporalStatus.CURRENT:
                 ref.temporal_status = result.temporal_status
                 ref.accepted = True
                 summary.accepted.append(ref)

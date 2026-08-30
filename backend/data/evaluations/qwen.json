@@ -1,0 +1,1134 @@
+{
+  "average_model_latency_ms": 5964.36,
+  "candidate_action_accuracy": 0.52,
+  "candidate_correct_count": 26,
+  "disclosure": "Candidate metrics measure Qwen before PolicyEngine. Final metrics measure the post-policy action. Cached rows contain concise structured outputs only.",
+  "evaluation": "Qwen Recovery Evaluation",
+  "fallback_count": 0,
+  "fallback_rate": 0.0,
+  "final_correct_count": 30,
+  "final_post_policy_action_accuracy": 0.6,
+  "forbidden_rejected_evidence_usage_count": 0,
+  "forbidden_rejected_evidence_usage_rate": 0.0,
+  "hallucinated_evidence_count": 0,
+  "hallucinated_evidence_rate": 0.0,
+  "mode": "live_agent",
+  "model": "qwen/qwen3.8-27b",
+  "model_latencies_ms": [
+    862.66,
+    737.61,
+    588.31,
+    901.52,
+    572.18,
+    1073.37,
+    661.86,
+    718.13,
+    5882.46,
+    5687.83,
+    5662.85,
+    7779.7,
+    4647.75,
+    5743.18,
+    4665.8,
+    5814.04,
+    4679.15,
+    3712.15,
+    4639.51,
+    5678.38,
+    5651.72,
+    5644.94,
+    5677.9,
+    5711.53,
+    5657.99,
+    5706.47,
+    8903.26,
+    7883.49,
+    8916.28,
+    9985.26,
+    8827.64,
+    6809.82,
+    7754.09,
+    7784.18,
+    7796.99,
+    7784.34,
+    5746.56,
+    5737.88,
+    4723.63,
+    5690.9,
+    9105.43,
+    11138.92,
+    11241.37,
+    8882.05,
+    6888.02,
+    7901.89,
+    7843.57,
+    9045.73,
+    9090.31,
+    7977.17
+  ],
+  "policy_block_count": 4,
+  "policy_block_rate": 0.08,
+  "policy_modification_count": 0,
+  "policy_modification_rate": 0.0,
+  "rows": [
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "successful_alternative",
+      "cited_evidence_ids": [
+        "17ab2906-2891-41da-9673-a35ebe63f5f8",
+        "7be26489-1967-4130-8a3f-ac431617ccae"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 862.66,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0000",
+      "total_latency_ms": 884.2,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 600
+      },
+      "candidate_correct": true,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [
+        "5415fc73-f0ef-4c13-bd70-3d221a34f12b"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 737.61,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0001",
+      "total_latency_ms": 759.66,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "method_replacement",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 588.31,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0002",
+      "total_latency_ms": 613.96,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "merchant_specific",
+      "cited_evidence_ids": [
+        "7a571d39-661a-4ac1-a906-689cb1478391",
+        "80c2bee1-b9a8-47db-bf74-bffe8d5b9205",
+        "86d8ceba-bfec-4d60-84df-4542764fd125"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 901.52,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0003",
+      "total_latency_ms": 928.16,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "no_history_control",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 572.18,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0004",
+      "total_latency_ms": 593.69,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "retry_limit_exhaustion",
+      "cited_evidence_ids": [
+        "4d4e997f-8987-47d5-bf15-d5af07c36d8b",
+        "8ae66a21-f5b1-49b8-88ea-70d2f3293265",
+        "9e4afedf-b6fc-4b6d-b98f-2c998ec601ef",
+        "b81bda33-d967-41fd-ad44-aa0dd0282978",
+        "ce76c427-06eb-45c5-9e77-5bd0c3ce1f59",
+        "ed2a8673-3b6e-4889-9857-b68706d93341"
+      ],
+      "fallback": false,
+      "final_action": "ESCALATE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 1073.37,
+      "policy_result": "BLOCK",
+      "scenario_id": "eval_0005",
+      "total_latency_ms": 1100.23,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 600
+      },
+      "candidate_correct": true,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [
+        "3e137720-c5d6-46af-a712-caa287e70f3d"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 661.86,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0006",
+      "total_latency_ms": 681.79,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": true,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [
+        "aa3e77a7-3eb8-4190-a45e-93b0df00a541"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 718.13,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0007",
+      "total_latency_ms": 736.62,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "wallet",
+        "retry_after_seconds": 720
+      },
+      "candidate_correct": true,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [
+        "5234d4f9-bdf0-49db-81af-4c2ba9a48fda"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5882.46,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0008",
+      "total_latency_ms": 5897.9,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "upi",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5687.83,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0009",
+      "total_latency_ms": 5706.09,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5662.85,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0010",
+      "total_latency_ms": 5680.78,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "upi",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": true,
+      "category": "transient_issuer",
+      "cited_evidence_ids": [
+        "f12d4549-66e8-431f-8469-f33e2c07c875"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7779.7,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0011",
+      "total_latency_ms": 7796.63,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "expired_instrument",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 4647.75,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0012",
+      "total_latency_ms": 4666.29,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "expired_instrument",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5743.18,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0013",
+      "total_latency_ms": 5763.37,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "expired_instrument",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 4665.8,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0014",
+      "total_latency_ms": 4684.81,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "expired_instrument",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5814.04,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0015",
+      "total_latency_ms": 5831.0,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "insufficient_balance",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 4679.15,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0016",
+      "total_latency_ms": 4701.32,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "CUSTOMER_NUDGE",
+        "recommended_method": null,
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "insufficient_balance",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "CUSTOMER_NUDGE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 3712.15,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0017",
+      "total_latency_ms": 3731.38,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "CUSTOMER_NUDGE",
+        "recommended_method": null,
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "insufficient_balance",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "CUSTOMER_NUDGE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 4639.51,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0018",
+      "total_latency_ms": 4657.25,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "route_degradation",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5678.38,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0019",
+      "total_latency_ms": 5695.37,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "route_degradation",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5651.72,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0020",
+      "total_latency_ms": 5672.12,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "wallet",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "route_degradation",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5644.94,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0021",
+      "total_latency_ms": 5665.25,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "method_replacement",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5677.9,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0022",
+      "total_latency_ms": 5694.35,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "method_replacement",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5711.53,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0023",
+      "total_latency_ms": 5728.08,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "method_replacement",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5657.99,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0024",
+      "total_latency_ms": 5677.25,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "method_replacement",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5706.47,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0025",
+      "total_latency_ms": 5728.21,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "card",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "merchant_specific",
+      "cited_evidence_ids": [
+        "41232470-c54e-4f55-9901-e66d9f1d01f0",
+        "84dc11cc-1ebe-43a8-80cd-db8e46d88d05",
+        "e262ecbc-2f57-47bc-a2d6-50f8c9deb64a"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 8903.26,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0026",
+      "total_latency_ms": 8929.67,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "merchant_specific",
+      "cited_evidence_ids": [
+        "12573353-faf6-438f-98d5-824d4d990b82",
+        "624d4a19-fe2b-46d2-94f3-ae6953b08eca"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7883.49,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0027",
+      "total_latency_ms": 7907.43,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "merchant_specific",
+      "cited_evidence_ids": [
+        "0ee52d58-1d6f-4418-81cf-4f242d274d91",
+        "93c578ab-c552-438a-8b7a-6280faca344d",
+        "cf8dc162-75a9-4c0d-b5b3-d6def07e0f89"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 8916.28,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0028",
+      "total_latency_ms": 8946.47,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "card",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "merchant_specific",
+      "cited_evidence_ids": [
+        "61f626ee-413a-4301-9c8f-997056f5093b",
+        "6db68b00-bdec-4c58-9ae6-991e5b56c724",
+        "b78ee011-5145-44da-8d4a-e61063ec19e2",
+        "cb39bfe6-e700-4ea8-a8ca-d2ad2c39b512"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 9985.26,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0029",
+      "total_latency_ms": 10012.27,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 480
+      },
+      "candidate_correct": true,
+      "category": "customer_specific",
+      "cited_evidence_ids": [
+        "2ff6177f-2638-4737-99e3-1572a9888c3d"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 8827.64,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0030",
+      "total_latency_ms": 8844.15,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "wallet",
+        "retry_after_seconds": 480
+      },
+      "candidate_correct": true,
+      "category": "customer_specific",
+      "cited_evidence_ids": [
+        "82c4fd4b-8548-465c-a9e2-d669512c7ccf"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 6809.82,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0031",
+      "total_latency_ms": 6829.37,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 600
+      },
+      "candidate_correct": true,
+      "category": "customer_specific",
+      "cited_evidence_ids": [
+        "fe9e3808-b0ed-4c18-b10d-b69ab4db1aa2"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7754.09,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0032",
+      "total_latency_ms": 7772.57,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "wallet",
+        "retry_after_seconds": 480
+      },
+      "candidate_correct": true,
+      "category": "customer_specific",
+      "cited_evidence_ids": [
+        "e44e93e0-30be-4db0-8a67-d281a3b72ea8"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7784.18,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0033",
+      "total_latency_ms": 7801.92,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 600
+      },
+      "candidate_correct": true,
+      "category": "conflicting_history",
+      "cited_evidence_ids": [
+        "41315366-8803-4451-bbf3-699dc5d85c71"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7796.99,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0034",
+      "total_latency_ms": 7818.02,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "wallet",
+        "retry_after_seconds": 600
+      },
+      "candidate_correct": true,
+      "category": "conflicting_history",
+      "cited_evidence_ids": [
+        "b95e2dcf-92ec-42ed-97b1-b1d6654b2a6c"
+      ],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7784.34,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0035",
+      "total_latency_ms": 7792.56,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "no_history_control",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5746.56,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0036",
+      "total_latency_ms": 5761.01,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "card",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "no_history_control",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5737.88,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0037",
+      "total_latency_ms": 5755.43,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "upi",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "no_history_control",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 4723.63,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0038",
+      "total_latency_ms": 4743.06,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "RETRY_AFTER",
+        "recommended_method": "upi",
+        "retry_after_seconds": 300
+      },
+      "candidate_correct": false,
+      "category": "no_history_control",
+      "cited_evidence_ids": [],
+      "fallback": false,
+      "final_action": "RETRY_AFTER",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 5690.9,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0039",
+      "total_latency_ms": 5714.11,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "retry_limit_exhaustion",
+      "cited_evidence_ids": [
+        "58e3bf3e-a455-41da-94be-0b4744b70977",
+        "64e28e7a-c122-4c18-addd-3fce2ad31f7c",
+        "7afaca99-95d4-4dc4-a6f0-69e32e33c7cf",
+        "8843bdda-b918-44b0-8455-a43211d62e55",
+        "fe9f2a2c-862a-4e86-bf89-36283ca153d9",
+        "fead530b-9e64-4e33-98ed-8f971184ba21"
+      ],
+      "fallback": false,
+      "final_action": "ESCALATE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 9105.43,
+      "policy_result": "BLOCK",
+      "scenario_id": "eval_0040",
+      "total_latency_ms": 9130.69,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "retry_limit_exhaustion",
+      "cited_evidence_ids": [
+        "24f9b511-4c4a-48c5-abb1-01034a70edab",
+        "28d0e494-fba2-4279-9db1-2c87a6af6fdf",
+        "3fd55f7b-4e5e-47d9-8953-a57e896596bb",
+        "891e2b1f-25e0-48d6-90b4-3ac940cbd621",
+        "c3f62928-ce09-4757-a798-f01159e73fed",
+        "f04e437f-f4f3-4f40-9d69-c2f612d2e9bc"
+      ],
+      "fallback": false,
+      "final_action": "ESCALATE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 11138.92,
+      "policy_result": "BLOCK",
+      "scenario_id": "eval_0041",
+      "total_latency_ms": 11162.65,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "retry_limit_exhaustion",
+      "cited_evidence_ids": [
+        "0b4a0416-fb74-4f0f-bd36-1a7fd712ce2e",
+        "16f486a9-a25d-496e-a7c4-943e4ee00899",
+        "2133918e-945a-489e-bfde-c0e3d52b29df",
+        "6a25ccb8-33f2-4934-beaf-45f29fdab0b1",
+        "75302d79-a471-4bb6-a281-eb4357ff9fe4",
+        "dcfe12ae-f821-4510-8fa1-13951330d539"
+      ],
+      "fallback": false,
+      "final_action": "ESCALATE",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 11241.37,
+      "policy_result": "BLOCK",
+      "scenario_id": "eval_0042",
+      "total_latency_ms": 11254.94,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "card",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "successful_alternative",
+      "cited_evidence_ids": [
+        "46d6ca91-34d3-4358-ac72-0e19efb8eae8"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 8882.05,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0043",
+      "total_latency_ms": 8904.32,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "successful_alternative",
+      "cited_evidence_ids": [
+        "6b086f17-fa0c-4962-b775-f5cd0392ddcb",
+        "fa449445-761f-4f45-957d-eb3c680cf9cb"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 6888.02,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0044",
+      "total_latency_ms": 6907.48,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "successful_alternative",
+      "cited_evidence_ids": [
+        "229bc507-41f6-4222-b0cc-eb0b9d6901f8",
+        "734ff753-e075-4f15-946f-6a9fdb0eec4a"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7901.89,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0045",
+      "total_latency_ms": 7929.1,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "netbanking",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": true,
+      "category": "successful_alternative",
+      "cited_evidence_ids": [
+        "a79c4a27-ea27-4110-8053-0ce14aa8bec5",
+        "f1963787-90f2-49ab-a4b1-904b92c25809"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": true,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7843.57,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0046",
+      "total_latency_ms": 7858.25,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "wallet",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "failed_alternative",
+      "cited_evidence_ids": [
+        "2c7523fa-9bfb-4d7b-8185-1538236abb07",
+        "4343720e-06d2-4ca0-a248-681ec6ed9ca3",
+        "79565202-a81a-49c5-81e8-431be84f0d92",
+        "f6689093-b931-45c2-8d97-cd7b9a8a6023"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 9045.73,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0047",
+      "total_latency_ms": 9071.83,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "failed_alternative",
+      "cited_evidence_ids": [
+        "18068823-7762-491b-8a65-4ab9cec15b6d",
+        "3ed1f55f-1aa6-4b13-bb9f-4b605b706170",
+        "44bc56e3-e1d3-4b7c-b305-c1b767f403b1",
+        "db1e9748-06dc-4ec2-aaa7-9b250c283091"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 9090.31,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0048",
+      "total_latency_ms": 9118.3,
+      "validation_errors": []
+    },
+    {
+      "candidate": {
+        "action": "SUGGEST_METHOD",
+        "recommended_method": "upi",
+        "retry_after_seconds": null
+      },
+      "candidate_correct": false,
+      "category": "failed_alternative",
+      "cited_evidence_ids": [
+        "07a5993d-37cb-420a-84ea-dc1776dca216",
+        "4753cea9-19f1-48a1-b4a5-275f22b42cca",
+        "5715195a-ad7b-4705-87e5-531b3fd8c444",
+        "caa74dc0-f4fd-474a-b626-41ef5d62d649"
+      ],
+      "fallback": false,
+      "final_action": "SUGGEST_METHOD",
+      "final_correct": false,
+      "forbidden_rejected_evidence_ids": [],
+      "model_latency_ms": 7977.17,
+      "policy_result": "ALLOW",
+      "scenario_id": "eval_0049",
+      "total_latency_ms": 8004.36,
+      "validation_errors": []
+    }
+  ],
+  "safe_escalation_count": 4,
+  "safe_escalation_rate": 0.08,
+  "scenario_count": 50,
+  "seed": 31415,
+  "stale_evidence_citation_count": 0,
+  "stale_evidence_citation_rate": 0.0,
+  "stale_scenario_count": 5,
+  "structured_output_count": 50,
+  "token_usage": null,
+  "valid_structured_output_rate": 1.0
+}

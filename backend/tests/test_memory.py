@@ -1,14 +1,12 @@
 """Tests for WaggleRecoveryMemoryAdapter and SupersessionValidator."""
 from __future__ import annotations
 
-import tempfile
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
-
 from waggle.embeddings import EmbeddingModel
-from app.domain.enums import TemporalStatus
+
+from app.domain.enums import OutcomeStatus, RecoveryAction, TemporalStatus
 from app.domain.models import (
     EvidenceReference,
     PaymentFailure,
@@ -16,9 +14,8 @@ from app.domain.models import (
     RecoveryAttempt,
     RecoveryDecision,
 )
-from app.domain.enums import OutcomeStatus, RecoveryAction
-from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.memory.supersession import SupersessionValidator
+from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 
 
 @pytest.fixture
@@ -123,8 +120,6 @@ class TestStoreInstrumentSupersession:
 
         # Old node should be superseded — Waggle either sets valid_to or sets superseded_at in metadata
         old_node = tmp_graph.get_node(old_node_id)
-        new_node = tmp_graph.get_node(new_node_id)
-
         assert new_node_id != old_node_id
         # Waggle marks the superseded node via metadata superseded_at or valid_to
         superseded = (
@@ -146,6 +141,25 @@ class TestStoreInstrumentSupersession:
 
 
 class TestSupersessionValidator:
+    def test_unknown_evidence_fails_closed(self, validator):
+        ref = EvidenceReference(
+            waggle_node_id="missing-node",
+            label="Unavailable evidence",
+            memory_type="recovery_outcome",
+        )
+
+        result = validator.validate_evidence_bundle(
+            evidence_refs=[ref],
+            current_instrument_alias="card_current",
+            customer_id="CUST-UNKNOWN",
+        )
+
+        assert result.accepted == []
+        assert result.rejected == [ref]
+        assert ref.temporal_status == TemporalStatus.UNKNOWN
+        assert ref.accepted is False
+        assert "retrieval failed" in ref.rejection_reason.lower()
+
     def test_evidence_tied_to_superseded_instrument_is_rejected(self, adapter, validator):
         """Core property: evidence from superseded card_old should be rejected when current=card_new."""
         # Store card_old instrument
@@ -256,7 +270,6 @@ class TestSupersessionValidator:
 class TestGetCustomerHistory:
     def test_retrieves_stored_failures(self, adapter):
         customer_id = "CUST-HIST-001"
-        from datetime import UTC, datetime
         for i in range(3):
             failure = PaymentFailure(
                 external_payment_id=f"pay_hist_{i:03d}",

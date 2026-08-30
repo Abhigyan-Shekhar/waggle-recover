@@ -191,6 +191,25 @@ class AgentDecisionProvider(DecisionProvider):
         return decision
 
     def decide_with_trace(self, bundle: EvidenceBundle) -> tuple[RecoveryDecision, dict[str, Any]]:
+        # Treat the model/provider boundary as a second fail-closed gate. This
+        # protects against manually constructed or corrupted bundles that place
+        # non-current evidence in accepted_evidence.
+        non_current = [
+            ref for ref in bundle.accepted_evidence
+            if ref.temporal_status != TemporalStatus.CURRENT or not ref.accepted
+        ]
+        if non_current:
+            for ref in non_current:
+                ref.accepted = False
+                if not ref.rejection_reason:
+                    ref.rejection_reason = "Evidence is not provably current"
+            bundle = bundle.model_copy(update={
+                "accepted_evidence": [
+                    ref for ref in bundle.accepted_evidence
+                    if ref.temporal_status == TemporalStatus.CURRENT and ref.accepted
+                ],
+                "discarded_evidence": [*bundle.discarded_evidence, *non_current],
+            })
         if self._graph is None:
             state = self._safe_fallback({
                 "bundle": bundle,
@@ -379,7 +398,11 @@ class AgentDecisionProvider(DecisionProvider):
             evidence_ids = []
             errors.append("evidence_ids must be a string array")
 
-        accepted_by_id = {ref.waggle_node_id: ref for ref in bundle.accepted_evidence}
+        accepted_by_id = {
+            ref.waggle_node_id: ref
+            for ref in bundle.accepted_evidence
+            if ref.temporal_status == TemporalStatus.CURRENT and ref.accepted
+        }
         rejected_ids = {ref.waggle_node_id for ref in bundle.discarded_evidence}
         cited = set(evidence_ids)
         if cited & rejected_ids:
@@ -387,8 +410,8 @@ class AgentDecisionProvider(DecisionProvider):
         if cited - accepted_by_id.keys() - rejected_ids:
             errors.append("Model cited unknown evidence")
         cited_refs = [accepted_by_id[node_id] for node_id in evidence_ids if node_id in accepted_by_id]
-        if any(ref.temporal_status in (TemporalStatus.STALE, TemporalStatus.SUPERSEDED) for ref in cited_refs):
-            errors.append("Model cited stale or superseded evidence")
+        if any(ref.temporal_status != TemporalStatus.CURRENT for ref in cited_refs):
+            errors.append("Model cited evidence that is not provably current")
 
         if errors:
             return None, errors
@@ -437,10 +460,18 @@ class AgentDecisionProvider(DecisionProvider):
                 for item in bundle.current_instruments
             ],
             "safe_alternative_methods": safe_alternatives,
-            "trusted_historical_evidence": [AgentDecisionProvider._evidence_summary(ref, usable=True) for ref in bundle.accepted_evidence],
-            "rejected_memory_for_transparency_only": [
-                AgentDecisionProvider._evidence_summary(ref, usable=False) for ref in bundle.discarded_evidence
+            "trusted_historical_evidence": [
+                AgentDecisionProvider._evidence_summary(ref, usable=True)
+                for ref in bundle.accepted_evidence
+                if ref.temporal_status == TemporalStatus.CURRENT and ref.accepted
             ],
+            # Rejected content is audit-only and never enters the model prompt.
+            # Qwen receives only aggregate diagnostics with no IDs, labels,
+            # actions, timing, instruments, outcomes, or rejection prose.
+            "rejected_memory_summary": {
+                "count": len(bundle.discarded_evidence),
+                "categories": sorted({ref.temporal_status.value for ref in bundle.discarded_evidence}),
+            },
             "merchant_policy": None if policy is None else {
                 "allowed_actions": [action.value for action in policy.allowed_actions],
                 "max_recovery_attempts": policy.max_recovery_attempts,
@@ -454,7 +485,8 @@ class AgentDecisionProvider(DecisionProvider):
                 "memory_contribution": bundle.memory_contribution.value,
             },
             "authoritative_strategy_priors": [
-                item.model_dump(mode="json") for item in bundle.strategy_priors
+                item.model_dump(mode="json", exclude={"excluded_stale_evidence_ids"})
+                for item in bundle.strategy_priors
             ],
         }
 
@@ -480,9 +512,9 @@ class AgentDecisionProvider(DecisionProvider):
     def system_prompt() -> str:
         return (
             "You are a constrained payment recovery decision agent. Waggle has already decided which memories are "
-            "authoritative. Use ONLY trusted_historical_evidence as evidence. Items under "
-            "rejected_memory_for_transparency_only are forbidden evidence: never cite them, reuse their timing, or "
-            "override their stale/superseded status. You produce a candidate action only; you never execute payments. "
+            "authoritative. Use ONLY trusted_historical_evidence as evidence. rejected_memory_summary contains only "
+            "aggregate safety diagnostics; it is not evidence and contains no usable historical content. You produce "
+            "a candidate action only; you never execute payments. "
             "When supersession rejects the retrieved success/timing memory and no trusted timing evidence remains, "
             "prefer SUGGEST_METHOD using safe_alternative_methods over retrying the same failed method. "
             "authoritative_strategy_priors are advisory rankings over safe strategies only; never use them to "

@@ -74,6 +74,7 @@ class RecoveryOrchestrator:
         db: Database,
         decision_provider: DecisionProvider | None = None,
         settings: Settings | None = None,
+        temporal_validation_enabled: bool = True,
     ) -> None:
         self.adapter = adapter
         self.db = db
@@ -85,6 +86,7 @@ class RecoveryOrchestrator:
             supersession_validator=validator,
             lookup_confidence_threshold=self.settings.lookup_first_confidence_threshold,
             max_evidence_nodes=self.settings.max_evidence_nodes,
+            temporal_validation_enabled=temporal_validation_enabled,
         )
         self.policy_engine = PolicyEngine()
         self.executor = RecoveryExecutor()
@@ -120,6 +122,62 @@ class RecoveryOrchestrator:
         # customer+merchant activity is separate telemetry and must never make
         # independent payments consume one another's retry budget.
         retry_count = self.db.get_attempt_count_for_episode(episode.id)
+        terminal = self.db.get_terminal_state_for_episode(episode.id)
+        if terminal is not None:
+            action = RecoveryAction(terminal["action_type"])
+            escalation_row = self.db.get_escalation_for_episode(episode.id)
+            escalation_payload = None
+            if action == RecoveryAction.ESCALATE and escalation_row is not None:
+                escalation_payload = {
+                    "action": action.value,
+                    "human_review_required": True,
+                    "record_id": escalation_row["id"],
+                    "recovery_episode_id": episode.id,
+                    "reason": escalation_row["escalation_reason"],
+                    "merchant_id": escalation_row["merchant_id"],
+                    "customer_id": escalation_row["customer_id"],
+                    "failure_code": escalation_row["failure_reason"],
+                    "attempt_count": escalation_row["attempts_used"],
+                    "max_automated_attempts": escalation_row["max_automated_attempts"],
+                    "last_safe_action": escalation_row["candidate_action"],
+                    "evidence_ids": json.loads(escalation_row["accepted_evidence_json"]),
+                    "rejected_evidence_ids": json.loads(escalation_row["rejected_evidence_json"]),
+                    "policy_result": escalation_row["policy_result"],
+                    "money_movement": "NONE",
+                    "recommended_next_step": escalation_row["recommended_manual_next_step"],
+                    "state": escalation_row["state"],
+                }
+            # STOP and ESCALATE are absorbing states. Replayed webhooks or new
+            # failures in the same episode cannot restart automated recovery.
+            return {
+                "status": "terminal",
+                "reason": "Recovery episode is already in an irreversible safety state",
+                "recovery_episode": episode.model_dump(mode="json"),
+                "decision": {
+                    "action": action.value,
+                    "reason": terminal.get("reason") or "Terminal safety state retained",
+                    "status": terminal.get("status") or "terminal",
+                    "human_review_required": bool(terminal.get("human_review_required")),
+                    "escalation_reason": terminal.get("escalation_reason") or "",
+                    "attempt_count": terminal.get("attempt_count") or retry_count,
+                    "max_automated_attempts": terminal.get("max_automated_attempts") or 0,
+                    "last_safe_action": terminal.get("last_safe_action"),
+                    "policy_result": terminal.get("policy_result") or PolicyResult.ALLOW.value,
+                },
+                "outcome": {"outcome": OutcomeStatus.SKIPPED.value, "recovered_amount": 0},
+                "terminal_state": {
+                    "action": action.value,
+                    "entered_at": terminal.get("executed_at"),
+                    "decision_id": terminal.get("decision_id"),
+                    "money_movement": "NONE",
+                },
+                "escalation": escalation_payload,
+                "metrics": {
+                    "attempt_count_for_current_failure": retry_count,
+                    "evidence_accepted": 0,
+                    "evidence_discarded": 0,
+                },
+            }
         recent_customer_merchant_activity = self.db.get_recent_customer_merchant_activity(
             failure.customer_id,
             failure.merchant_id,
@@ -163,6 +221,19 @@ class RecoveryOrchestrator:
         candidate.strategy_priors = bundle.strategy_priors
         decision_latency_ms = (time.time() - decision_start) * 1000
 
+        # A provider's quiet STOP at the final automated attempt is promoted
+        # to an explicit human handoff before either terminal state is stored.
+        # Once persisted, both STOP and ESCALATE remain irreversible.
+        if (
+            candidate.action == RecoveryAction.STOP
+            and retry_count >= max(0, policy.max_recovery_attempts - 1)
+        ):
+            candidate.action = RecoveryAction.ESCALATE
+            candidate.abstention_reason = f"Maximum recovery attempts ({policy.max_recovery_attempts}) reached"
+            candidate.reason = candidate.abstention_reason
+            candidate.retry_after_seconds = None
+            candidate.recommended_method = None
+
         # 8. Stage 2: Policy validation
         policy_result = self.policy_engine.validate(
             decision=candidate,
@@ -179,7 +250,11 @@ class RecoveryOrchestrator:
         if final_decision.action == RecoveryAction.ESCALATE:
             final_decision.human_review_required = True
             final_decision.escalation_reason = policy_result.block_reason or "No safe automated recovery remains"
-            final_decision.attempt_count = retry_count
+            final_decision.attempt_count = (
+                retry_count + 1
+                if candidate.abstention_reason.startswith("Maximum recovery attempts")
+                else retry_count
+            )
             final_decision.max_automated_attempts = policy.max_recovery_attempts
             last_action = candidate_action
             if last_action in (RecoveryAction.STOP, RecoveryAction.ESCALATE):

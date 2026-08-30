@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 
+from app.api.auth import require_mutation_token
 from app.config import Settings, get_settings
 from app.main import get_db
 from app.persistence.database import Database
@@ -24,6 +25,7 @@ async def start_evaluation(
     background_tasks: BackgroundTasks,
     db: Database = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    _authorized: None = Depends(require_mutation_token),
 ) -> dict[str, Any]:
     """Start an evaluation run in the background."""
     seed = int(body.get("seed", 42))
@@ -169,6 +171,7 @@ async def get_run_results(run_id: str, db: Database = Depends(get_db)) -> dict[s
 async def run_evaluation_sync(
     body: dict[str, Any],
     settings: Settings = Depends(get_settings),
+    _authorized: None = Depends(require_mutation_token),
 ) -> dict[str, Any]:
     """Run evaluation synchronously (for small counts). Use for demo."""
     from app.evaluation.runner import run_evaluation
@@ -183,6 +186,7 @@ async def evaluation_reports() -> dict[str, Any]:
     """Return cached, separately labeled evaluation reports; never trigger spend."""
     reports: dict[str, Any] = {}
     for key, filename in {
+        "main": "main.json",
         "robustness": "robustness.json",
         "ablations": "ablations.json",
         "qwen": "qwen.json",

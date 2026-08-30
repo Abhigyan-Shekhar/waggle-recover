@@ -1,12 +1,20 @@
 """End-to-end orchestrator tests with the full recovery pipeline."""
 from __future__ import annotations
 
-import pytest
 from datetime import UTC, datetime
 
+import pytest
 from waggle.embeddings import EmbeddingModel
-from app.domain.models import EvidenceBundle, EvidenceReference, MerchantPolicy, NormalizedPaymentEvent, PaymentFailure, PaymentInstrument, RecoveryDecision
+
 from app.domain.enums import OutcomeStatus, RecoveryAction, TemporalStatus
+from app.domain.models import (
+    EvidenceBundle,
+    EvidenceReference,
+    MerchantPolicy,
+    NormalizedPaymentEvent,
+    PaymentFailure,
+    RecoveryDecision,
+)
 from app.memory.waggle_adapter import WaggleRecoveryMemoryAdapter
 from app.persistence.database import Database
 from app.recovery.orchestrator import RecoveryOrchestrator
@@ -33,23 +41,50 @@ def tmp_setup(tmp_path):
 
 
 def _make_event(**kwargs) -> NormalizedPaymentEvent:
-    defaults = dict(
-        event_type="payment.failed",
-        payment_id="pay_test_001",
-        customer_id="CUST-E2E-001",
-        merchant_id="MERCH-E2E-001",
-        amount=100000,
-        method="card",
-        instrument_id="card_1234",
-        error_code="issuer_unavailable",
-        error_description="Issuer temporarily unavailable",
-        created_at=datetime.now(UTC),
-    )
+    defaults = {
+        "event_type": "payment.failed",
+        "payment_id": "pay_test_001",
+        "customer_id": "CUST-E2E-001",
+        "merchant_id": "MERCH-E2E-001",
+        "amount": 100000,
+        "method": "card",
+        "instrument_id": "card_1234",
+        "error_code": "issuer_unavailable",
+        "error_description": "Issuer temporarily unavailable",
+        "created_at": datetime.now(UTC),
+    }
     defaults.update(kwargs)
     return NormalizedPaymentEvent(**defaults)
 
 
 class TestOrchestratorBasic:
+    @pytest.mark.parametrize("terminal_action", [RecoveryAction.STOP, RecoveryAction.ESCALATE])
+    def test_terminal_safety_states_are_irreversible(self, tmp_setup, terminal_action):
+        orchestrator, _, db = tmp_setup
+
+        class TerminalProvider:
+            mode = "test"
+
+            def decide_with_trace(self, bundle):
+                return RecoveryDecision(
+                    failure_id=bundle.current_failure.id,
+                    action=terminal_action,
+                    confidence=1.0,
+                    reason="Enter terminal safety state",
+                ), {"decision_mode": "test"}
+
+        event = _make_event(payment_id=f"pay_terminal_{terminal_action.value.lower()}")
+        first = orchestrator.process_event(event=event, simulate=True, decision_provider=TerminalProvider())
+        attempts_before = db.get_attempt_count_for_episode(first["recovery_episode"]["id"])
+
+        second = orchestrator.process_event(event=event, simulate=True)
+
+        assert first["decision"]["action"] == terminal_action.value
+        assert second["status"] == "terminal"
+        assert second["terminal_state"]["action"] == terminal_action.value
+        assert second["terminal_state"]["money_movement"] == "NONE"
+        assert db.get_attempt_count_for_episode(first["recovery_episode"]["id"]) == attempts_before
+
     def test_real_execution_is_pending_until_capture(self, tmp_setup):
         orchestrator, _, db = tmp_setup
         event = _make_event(payment_id="pay_external_pending")

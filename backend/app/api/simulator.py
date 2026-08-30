@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.auth import require_mutation_token
 from app.config import Settings, get_settings
 from app.domain.enums import RecoveryAction
 from app.domain.models import MerchantPolicy, NormalizedPaymentEvent
@@ -102,6 +103,7 @@ async def list_scenarios() -> dict[str, Any]:
 async def reset_simulator(
     db: Database = Depends(get_db),
     orchestrator: RecoveryOrchestrator = Depends(get_orchestrator),
+    _authorized: None = Depends(require_mutation_token),
 ) -> dict[str, Any]:
     """Reset the isolated simulator tenant and its companion application DB."""
     db.clear_recovery_data()

@@ -215,6 +215,7 @@ function App() {
       setEvaluationReports(reportsBody.reports ?? null);
       const completed = (runsBody.data ?? []).find((run: { status: string; summary?: EvaluationSummary }) => run.status === "completed" && run.summary);
       if (completed) setEvaluation(completed.summary);
+      else if (reportsBody.reports?.main?.status === "completed") setEvaluation(reportsBody.reports.main.report);
       setError(null);
       return latestRecoveries;
     } catch (cause) {
@@ -341,12 +342,12 @@ function App() {
       await showTourSection(document.getElementById("overview"), "Opening: the recovery safety promise", 3500);
 
       setDecisionMode("agent");
-      await showTourSection(document.getElementById("simulator"), "Stale Card Trap: Qwen proposes, Policy Guard decides", 1600);
+      await showTourSection(document.getElementById("simulator"), "Fail-closed memory: only provably current evidence can reach Qwen", 1600);
       if (demoTourCancelled.current) return;
       await runScenario("curated_003", "agent");
       await pauseTour(7000);
 
-      await showTourSection(agentTraceRef.current, "Constrained Qwen trace: candidate → policy → recorded action", 6000);
+      await showTourSection(agentTraceRef.current, "Redacted Qwen context: rejected memory is reduced to count + categories", 6000);
       await showTourSection(graphRef.current, "Memory graph: old card evidence was retained, but rejected as stale", 6500);
 
       setDecisionMode("deterministic");
@@ -355,14 +356,35 @@ function App() {
       await runScenario("curated_002", "deterministic");
       await pauseTour(5500);
 
+      await showTourSection(document.getElementById("simulator"), "Temporal policy change: old policy remains audit-only; current policy controls", 1000);
+      if (demoTourCancelled.current) return;
+      await runScenario("eval_0007", "deterministic");
+      await pauseTour(5000);
+
+      if (subscriptionScenarios[0]) {
+        await showTourSection(document.getElementById("simulator"), "Subscription recovery: the same evidence and policy boundary", 1000);
+        if (demoTourCancelled.current) return;
+        await runSubscriptionScenario(subscriptionScenarios[0].id);
+        await pauseTour(4500);
+      }
+
       await showTourSection(document.getElementById("simulator"), "Human Escalation: the autonomous boundary is enforced", 1000);
       if (demoTourCancelled.current) return;
       await runScenario("curated_006", "agent");
       await pauseTour(6500);
-      await showTourSection(graphRef.current, "Policy BLOCK → ESCALATE → human review; no money movement", 5000);
+      await showTourSection(graphRef.current, "Irreversible terminal state: STOP / ESCALATE cannot restart automation", 5000);
+
+      await showTourSection(document.querySelector<HTMLElement>(".strategy-memory"), "Adaptive strategy memory: current evidence only, policy still final", 4500);
 
       if (!evaluation) await runEvaluation();
-      await showTourSection(evaluationRef.current, "200 seeded, deterministic, simulated scenarios — zero Groq calls", 8000);
+      setEvaluationTab("main");
+      await showTourSection(evaluationRef.current, "Fair 200-case benchmark: equivalent episode retry counts for every system", 6000);
+      setEvaluationTab("robustness");
+      await showTourSection(evaluationRef.current, "Frozen 1,000-case robustness report", 4500);
+      setEvaluationTab("ablations");
+      await showTourSection(evaluationRef.current, "Genuine ablation: identical Waggle pipeline, temporal validator OFF versus ON", 5000);
+      setEvaluationTab("qwen");
+      await showTourSection(evaluationRef.current, "Separate frozen 50-case Qwen report — or an honest not-run state", 4500);
 
       await showTourSection(document.getElementById("overview"), "Waggle Recover: revenue recovery with a memory of what changed", 6000);
       setMessage("Demo tour complete · all proof points were shown.");
@@ -406,9 +428,10 @@ function App() {
             <button className="primary-action" disabled={Boolean(scenarioRunning) || booting || demoTourRunning} onClick={() => void runScenario("curated_003")}>
               {scenarioRunning === "curated_003" ? <><span className="spinner dark" /> Running stale-card trap</> : <>Run stale-card trap <span aria-hidden="true">→</span></>}
             </button>
-            <button className="demo-tour-button" disabled={booting} onClick={() => demoTourRunning ? stopDemoTour() : void runDemoTour()}>{demoTourRunning ? "Stop demo tour" : "Record demo tour"}<span aria-hidden="true">◉</span></button>
+            <button className="demo-tour-button" disabled={booting} onClick={() => demoTourRunning ? stopDemoTour() : void runDemoTour()}>{demoTourRunning ? "Stop feature tour" : "Run full feature tour"}<span aria-hidden="true">◉</span></button>
             <a className="secondary-action" href="#memory">See how memory is validated</a>
           </div>
+          <p className="demo-feature-copy">Includes fail-closed temporal memory · Qwen prompt redaction · irreversible STOP / ESCALATE · policy changes · subscription recovery · adaptive strategy memory · fair 200-case and 1,000-case reports · validator ON/OFF ablation · frozen Qwen report</p>
         </div>
         <aside className="decision-map" aria-label="How Waggle decides">
           <div className="map-header"><span>Decision protocol</span><b>3 guarded steps</b></div>

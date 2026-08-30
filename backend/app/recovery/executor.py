@@ -6,7 +6,7 @@ import random
 from typing import Any
 
 from app.domain.enums import OutcomeStatus, RecoveryAction
-from app.domain.models import MerchantPolicy, RecoveryAttempt, RecoveryDecision
+from app.domain.models import RecoveryAttempt, RecoveryDecision
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +41,6 @@ class RecoveryExecutor:
             simulate: If True, simulate outcome without real payment
             simulation_outcomes: Dict mapping action → outcome for deterministic evaluation
         """
-        from datetime import datetime
 
         attempt = RecoveryAttempt(
             failure_id=failure_id,

@@ -10,7 +10,6 @@ from typing import Any
 
 from app.domain.models import PaymentFailure
 
-
 DEFAULT_WEIGHTS = {
     "semantic_relevance": 0.20,
     "customer_match": 0.20,
@@ -38,8 +37,6 @@ def score_evidence(
     """
     w = weights or DEFAULT_WEIGHTS
     tags = node.get("tags", [])
-    metadata = node.get("metadata", {})
-
     components: dict[str, float] = {}
 
     # 1. Semantic relevance (from Waggle scoring if available)
